@@ -101,16 +101,16 @@ interface QuizDao {
     suspend fun insertQuestions(questions: List<Question>)
 
     // Quiz Attempt Operations
-    @Query("SELECT * FROM quiz_attempts WHERE userId = :userId ORDER BY dateMillis ASC")
+    @Query("SELECT * FROM quiz_attempts WHERE userId = :userId ORDER BY dateMillis DESC")
     fun getAttemptsForUserFlow(userId: String): Flow<List<QuizAttempt>>
 
-    @Query("SELECT * FROM quiz_attempts WHERE userId = :userId OR (:userEmail != '' AND userId = :userEmail) ORDER BY dateMillis ASC")
+    @Query("SELECT * FROM quiz_attempts WHERE userId = :userId OR (:userEmail != '' AND (userId = :userEmail OR userId = REPLACE(:userEmail, '.', '_'))) ORDER BY dateMillis DESC")
     fun getAttemptsForUserOrEmailFlow(userId: String, userEmail: String): Flow<List<QuizAttempt>>
 
-    @Query("SELECT * FROM quiz_attempts WHERE userId = :userId ORDER BY dateMillis ASC")
+    @Query("SELECT * FROM quiz_attempts WHERE userId = :userId ORDER BY dateMillis DESC")
     suspend fun getAttemptsForUser(userId: String): List<QuizAttempt>
 
-    @Query("SELECT * FROM quiz_attempts WHERE userId = :userId OR (:userEmail != '' AND userId = :userEmail) ORDER BY dateMillis ASC")
+    @Query("SELECT * FROM quiz_attempts WHERE userId = :userId OR (:userEmail != '' AND (userId = :userEmail OR userId = REPLACE(:userEmail, '.', '_'))) ORDER BY dateMillis DESC")
     suspend fun getAttemptsForUserOrEmail(userId: String, userEmail: String): List<QuizAttempt>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -122,7 +122,7 @@ interface QuizDao {
     @Query("DELETE FROM quiz_attempts WHERE userId = :userId")
     suspend fun deleteAttemptsForUser(userId: String)
 
-    @Query("DELETE FROM quiz_attempts WHERE userId = :userId OR (:userEmail != '' AND userId = :userEmail)")
+    @Query("DELETE FROM quiz_attempts WHERE userId = :userId OR (:userEmail != '' AND (userId = :userEmail OR userId = REPLACE(:userEmail, '.', '_')))")
     suspend fun deleteAttemptsForUserOrEmail(userId: String, userEmail: String)
 
     @Query("DELETE FROM quiz_attempts WHERE documentId = :documentId")

@@ -24,6 +24,11 @@ class MainActivity : ComponentActivity() {
     // Implement a custom OnBackPressedCallback to handle physical/gesture back navigation smoothly
     val onBackPressedCallback = object : androidx.activity.OnBackPressedCallback(true) {
       override fun handleOnBackPressed() {
+        if (quizViewModel.isCurrentUserBlocked.value) {
+          // If account is suspended, do not navigate back to content screens
+          finish()
+          return
+        }
         val handled = quizViewModel.navigateBack()
         if (!handled) {
           // If we are already on Home/Splash, disable this callback and run the default exit behavior

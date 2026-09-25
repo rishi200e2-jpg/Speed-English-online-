@@ -348,9 +348,15 @@ object GeminiQuestionGenerator {
         // ---------------------------------------------------------------------
         // PASS 2: Strict Extraction
         // ---------------------------------------------------------------------
-        val totalQuestions = blueprint.totalQuestions
-        // Batch extractions safely so response limits are not exceeded (<= 25 items per request)
-        val batchSize = if (totalQuestions > 30) 25 else totalQuestions
+        val totalQuestions = if (blueprint.questionIndex.isNotEmpty()) {
+            blueprint.questionIndex.size
+        } else {
+            blueprint.totalQuestions
+        }
+        
+        // Extract in extremely safe and reliable batches of 5 questions.
+        // This prevents response truncation/token limit cuts from the Gemini API.
+        val batchSize = 5
         val numBatches = (totalQuestions + batchSize - 1) / batchSize
 
         val pass2Schema = GeminiSchema(
@@ -502,12 +508,12 @@ object GeminiQuestionGenerator {
                     }
                 } catch (e: Exception) {
                     android.util.Log.e("GeminiQuestionGenerator", "Pass 2 batch $b attempt $pass2Attempt failed: ${e.message}", e)
-                    if (pass2Attempt == maxPass2Attempts && b == 0) throw e
-                    kotlinx.coroutines.delay(1500L * pass2Attempt)
+                    if (pass2Attempt == maxPass2Attempts) throw e
+                    kotlinx.coroutines.delay(1000L * pass2Attempt)
                 }
                 pass2Attempt++
             }
-            kotlinx.coroutines.delay(1500L)
+            kotlinx.coroutines.delay(300L)
         }
 
         return extractedQuestions

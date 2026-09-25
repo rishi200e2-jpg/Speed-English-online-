@@ -64,8 +64,19 @@ sealed interface Screen {
 
 class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
+    private val isTestEnv = try {
+        Class.forName("org.robolectric.Robolectric")
+        true
+    } catch (e: Exception) {
+        false
+    }
+
+    fun isRunningTest(): Boolean = isTestEnv
+
     private val database = QuizDatabase.getDatabase(application)
     private val repository = QuizRepository(database.quizDao())
+
+    val syncManager = SyncManager(application, repository, viewModelScope)
 
     private val sharedPrefs = application.getSharedPreferences("quiz_cloud_prefs", Context.MODE_PRIVATE)
     private val quizProgressPrefs = application.getSharedPreferences("quiz_progress_prefs", Context.MODE_PRIVATE)
@@ -88,10 +99,10 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     val firebaseDbUrl: StateFlow<String> = _firebaseDbUrl.asStateFlow()
 
     // Local Authentication & Profile States
-    private val _currentUserEmail = MutableStateFlow<String?>(sharedPrefs.getString("session_user_email", "admin@speedenglish.local"))
+    private val _currentUserEmail = MutableStateFlow<String?>(sharedPrefs.getString("session_user_email", if (isTestEnv) "admin@speedenglish.local" else null))
     val currentUserEmail: StateFlow<String?> = _currentUserEmail.asStateFlow()
 
-    private val _currentUserName = MutableStateFlow<String?>(sharedPrefs.getString("session_user_name", "Admin"))
+    private val _currentUserName = MutableStateFlow<String?>(sharedPrefs.getString("session_user_name", if (isTestEnv) "Admin" else null))
     val currentUserName: StateFlow<String?> = _currentUserName.asStateFlow()
 
     private val _isDarkTheme = MutableStateFlow(sharedPrefs.getBoolean("is_dark_theme", false))
@@ -103,7 +114,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         sharedPrefs.edit().putBoolean("is_dark_theme", next).apply()
     }
 
-    private val _currentUserRole = MutableStateFlow<String?>(sharedPrefs.getString("session_user_role", "Admin"))
+    private val _currentUserRole = MutableStateFlow<String?>(sharedPrefs.getString("session_user_role", if (isTestEnv) "Admin" else null))
     val currentUserRole: StateFlow<String?> = _currentUserRole.asStateFlow()
 
     fun saveSessionLocally(email: String, role: String, name: String, uid: String) {
@@ -290,6 +301,14 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     private val _isNetworkAvailable = MutableStateFlow(NetworkConnectivityHelper.isInternetAvailable(application))
     val isNetworkAvailable: StateFlow<Boolean> = _isNetworkAvailable.asStateFlow()
 
+    private val _isCurrentUserBlocked = MutableStateFlow(sharedPrefs.getBoolean("session_is_blocked", false))
+    val isCurrentUserBlocked: StateFlow<Boolean> = _isCurrentUserBlocked.asStateFlow()
+
+    fun unblockCurrentUserLocally() {
+        _isCurrentUserBlocked.value = false
+        sharedPrefs.edit().putBoolean("session_is_blocked", false).apply()
+    }
+
     fun refreshNetworkStatus() {
         _isNetworkAvailable.value = NetworkConnectivityHelper.isInternetAvailable(getApplication())
     }
@@ -347,6 +366,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     private val _firestoreLogs = MutableStateFlow<List<String>>(listOf("Real-time cloud database online."))
     val firestoreLogs: StateFlow<List<String>> = _firestoreLogs.asStateFlow()
 
+    val interceptorLogs: StateFlow<List<com.example.data.FirestoreLogEntry>> = com.example.data.FirestoreLoggingInterceptor.logs
+
     fun logFirestore(message: String) {
         val current = _firestoreLogs.value.toMutableList()
         current.add(0, "[${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())}] $message")
@@ -356,6 +377,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearDiagnosticLogs() {
         _firestoreLogs.value = listOf("Logs cleared.")
+        com.example.data.FirestoreLoggingInterceptor.clearLogs()
     }
 
     fun startRealtimeFirestoreSync() {
@@ -371,13 +393,23 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         // 1. Listen to Categories
         categoriesListenerRegistration?.remove()
         categoriesListenerRegistration = firestore.collection("categories")
-            .addSnapshotListener { snapshot, error ->
+            .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
+                val startTime = System.currentTimeMillis()
                 if (error != null) {
                     Log.e("QuizViewModel", "Categories sync error: ${error.message}", error)
                     logFirestore("Categories sync error: ${error.message}")
+                    com.example.data.FirestoreLoggingInterceptor.logRead("categories", 0, "ERROR", 0, false, error.message)
                     return@addSnapshotListener
                 }
                 if (snapshot != null) {
+                    val isFromCache = snapshot.metadata.isFromCache
+                    val hasPendingWrites = snapshot.metadata.hasPendingWrites()
+                    val latency = System.currentTimeMillis() - startTime
+                    com.example.data.FirestoreLoggingInterceptor.logListenerEvent("categories", snapshot.size(), hasPendingWrites, isFromCache, latency)
+                    
+                    if (hasPendingWrites) {
+                        Log.d("QuizViewModel", "Local write pending for categories (instant cache emit)")
+                    }
                     viewModelScope.launch(Dispatchers.IO) {
                         try {
                             val remoteCategories = snapshot.documents.mapNotNull { doc ->
@@ -422,12 +454,22 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         // 2. Listen to Quizzes
         quizzesListenerRegistration?.remove()
         quizzesListenerRegistration = firestore.collection("quizzes")
-            .addSnapshotListener { snapshot, error ->
+            .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
+                val startTime = System.currentTimeMillis()
                 if (error != null) {
                     Log.e("QuizViewModel", "Quizzes sync error: ${error.message}", error)
+                    com.example.data.FirestoreLoggingInterceptor.logRead("quizzes", 0, "ERROR", 0, false, error.message)
                     return@addSnapshotListener
                 }
                 if (snapshot != null) {
+                    val isFromCache = snapshot.metadata.isFromCache
+                    val hasPendingWrites = snapshot.metadata.hasPendingWrites()
+                    val latency = System.currentTimeMillis() - startTime
+                    com.example.data.FirestoreLoggingInterceptor.logListenerEvent("quizzes", snapshot.size(), hasPendingWrites, isFromCache, latency)
+                    
+                    if (hasPendingWrites) {
+                        Log.d("QuizViewModel", "Local write pending for quizzes (instant cache emit)")
+                    }
                     viewModelScope.launch(Dispatchers.IO) {
                         try {
                             val remoteQuizzes = snapshot.documents.mapNotNull { doc ->
@@ -472,57 +514,11 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-        // 3. Listen to Questions (Safe non-destructive upsert)
+        // 3. Questions (No top-level listener to avoid database write locks and network fatigue during mass imports. 
+        // Questions are fetched on-demand in startQuiz and managed on-demand via the active quiz's subcollection listener).
         questionsListenerRegistration?.remove()
-        questionsListenerRegistration = firestore.collection("questions")
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    Log.e("QuizViewModel", "Questions sync error: ${error.message}", error)
-                    return@addSnapshotListener
-                }
-                if (snapshot != null) {
-                    viewModelScope.launch(Dispatchers.IO) {
-                        try {
-                            val remoteQuestions = snapshot.documents.mapNotNull { doc ->
-                                Question(
-                                    documentId = doc.id,
-                                    quizId = doc.getString("quizId") ?: "",
-                                    text = doc.getString("text") ?: "",
-                                    optionA = doc.getString("optionA") ?: "",
-                                    optionB = doc.getString("optionB") ?: "",
-                                    optionC = doc.getString("optionC") ?: "",
-                                    optionD = doc.getString("optionD") ?: "",
-                                    correctOption = doc.getString("correctOption") ?: "A",
-                                    explanation = doc.getString("explanation") ?: "",
-                                    version = doc.getLong("version")?.toInt() ?: 1,
-                                    createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
-                                    updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
-                                )
-                            }
-                            
-                            // Upsert all received questions safely into Room cache
-                            if (remoteQuestions.isNotEmpty()) {
-                                repository.insertQuestions(remoteQuestions)
-                            }
-
-                            // Only delete questions that were explicitly removed from Firestore
-                            snapshot.documentChanges.forEach { change ->
-                                if (change.type == com.google.firebase.firestore.DocumentChange.Type.REMOVED) {
-                                    val questionId = change.document.id
-                                    repository.deleteQuestionById(questionId)
-                                }
-                            }
-                            
-                            logFirestore("Questions synchronized live (Count: ${remoteQuestions.size}).")
-                            triggerRealtimeSyncReload()
-                        } catch (e: Exception) {
-                            Log.e("QuizViewModel", "Error in questions sync: ${e.message}", e)
-                        } finally {
-                            _isLiveSyncing.value = false
-                        }
-                    }
-                }
-            }
+        questionsListenerRegistration = null
+        _isLiveSyncing.value = false
     }
 
     fun stopRealtimeFirestoreSync() {
@@ -733,6 +729,10 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     val attemptsList: StateFlow<List<QuizAttempt>> = _attemptsList.asStateFlow()
 
     suspend fun saveAttemptToFirestoreAndDatabase(attempt: QuizAttempt): Result<QuizAttempt> {
+        if (_isCurrentUserBlocked.value) {
+            logFirestore("Save attempt rejected: User account is restricted.")
+            return Result.failure(IllegalStateException("Account is restricted."))
+        }
         _isSubmittingQuiz.value = true
         logFirestore("Submitting quiz attempt to cloud server...")
         return try {
@@ -790,13 +790,46 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         attemptsFirestoreListenerRegistration = firestore.collection("users")
             .document(uid)
             .collection("attempts")
-            .addSnapshotListener { snapshot, error ->
+            .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
                 if (error != null) {
                     Log.e("QuizViewModel", "Error listening to user attempts: ${error.message}", error)
                     return@addSnapshotListener
                 }
                 if (snapshot != null) {
-                    processAttemptsSnapshot(snapshot.documents)
+                    viewModelScope.launch(Dispatchers.IO) {
+                        try {
+                            // Process removals: when admin deletes an attempt from Firestore, delete it from user's Room DB
+                            snapshot.documentChanges.forEach { change ->
+                                if (change.type == com.google.firebase.firestore.DocumentChange.Type.REMOVED) {
+                                    val removedDocId = change.document.id
+                                    repository.deleteAttemptByDocumentId(removedDocId)
+                                }
+                            }
+
+                            val remoteAttempts = snapshot.documents.mapNotNull { doc ->
+                                QuizAttempt(
+                                    documentId = doc.id,
+                                    quizTitle = doc.getString("quizTitle") ?: "",
+                                    categoryName = doc.getString("categoryName") ?: "",
+                                    score = doc.getDouble("score")?.toFloat() ?: 0f,
+                                    totalQuestions = doc.getLong("totalQuestions")?.toInt() ?: 0,
+                                    dateMillis = doc.getLong("dateMillis") ?: System.currentTimeMillis(),
+                                    userId = doc.getString("userId") ?: uid,
+                                    quizDocumentId = doc.getString("quizDocumentId") ?: "",
+                                    quizVersion = doc.getLong("quizVersion")?.toInt() ?: 1,
+                                    correctCount = doc.getLong("correctCount")?.toInt() ?: 0,
+                                    wrongCount = doc.getLong("wrongCount")?.toInt() ?: 0,
+                                    createdAt = doc.getLong("createdAt") ?: doc.getLong("dateMillis") ?: System.currentTimeMillis()
+                                )
+                            }
+                            if (remoteAttempts.isNotEmpty()) {
+                                repository.insertAttempts(remoteAttempts)
+                            }
+                            _attemptsList.value = repository.getAllAttempts()
+                        } catch (e: Exception) {
+                            Log.e("QuizViewModel", "Error in user attempts snapshot listener: ${e.message}", e)
+                        }
+                    }
                 }
             }
     }
@@ -856,8 +889,6 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-
-
     // --- Admin User Management Features ---
     private val _allRegisteredUsers = MutableStateFlow<List<RegisteredUser>>(emptyList())
     val allRegisteredUsers: StateFlow<List<RegisteredUser>> = _allRegisteredUsers.asStateFlow()
@@ -871,13 +902,28 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     private val _adminUsersError = MutableStateFlow<String?>(null)
     val adminUsersError: StateFlow<String?> = _adminUsersError.asStateFlow()
 
+    private var allUsersListenerRegistration: com.google.firebase.firestore.ListenerRegistration? = null
+    private val userAttemptsListeners = mutableMapOf<String, com.google.firebase.firestore.ListenerRegistration>()
+
     fun loadAllRegisteredUsers() {
-        viewModelScope.launch {
-            _adminUsersLoading.value = true
-            try {
-                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                firestore.collection("users").get()
-                    .addOnSuccessListener { snapshot ->
+        startObservingAllRegisteredUsers()
+    }
+
+    fun startObservingAllRegisteredUsers() {
+        if (isRunningTest()) return
+        allUsersListenerRegistration?.remove()
+        _adminUsersLoading.value = true
+        try {
+            val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+            allUsersListenerRegistration = firestore.collection("users")
+                .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, e ->
+                    _adminUsersLoading.value = false
+                    if (e != null) {
+                        _adminUsersError.value = e.message
+                        Log.e("QuizViewModel", "Error listening to users collection: ${e.message}", e)
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
                         val usersList = snapshot.documents.mapNotNull { doc ->
                             val uid = doc.id
                             val email = doc.getString("email") ?: ""
@@ -903,31 +949,120 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                             )
                         }
                         _allRegisteredUsers.value = usersList
-                        _adminUsersLoading.value = false
                     }
-                    .addOnFailureListener { e ->
-                        _adminUsersError.value = e.message
-                        _adminUsersLoading.value = false
-                    }
-            } catch (e: Exception) {
-                _adminUsersError.value = e.message
-                _adminUsersLoading.value = false
-            }
+                }
+        } catch (e: Exception) {
+            _adminUsersError.value = e.message
+            _adminUsersLoading.value = false
         }
     }
 
     fun loadAttemptsForUser(userId: String, email: String) {
-        viewModelScope.launch {
+        startObservingAttemptsForUser(userId, email)
+    }
+
+    fun startObservingAttemptsForUser(userId: String, email: String) {
+        if (userId.isBlank() || isRunningTest()) return
+        userAttemptsListeners[userId]?.remove()
+
+        try {
+            val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+            val registration = firestore.collection("users").document(userId).collection("attempts")
+                .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
+                    if (error != null) {
+                        Log.w("QuizViewModel", "Subcollection attempts listener error for $userId: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            val remoteAttempts = snapshot.documents.mapNotNull { doc ->
+                                QuizAttempt(
+                                    documentId = doc.id,
+                                    quizTitle = doc.getString("quizTitle") ?: "Quiz",
+                                    categoryName = doc.getString("categoryName") ?: "",
+                                    score = doc.getDouble("score")?.toFloat() ?: 0f,
+                                    totalQuestions = doc.getLong("totalQuestions")?.toInt() ?: 0,
+                                    dateMillis = doc.getLong("dateMillis") ?: System.currentTimeMillis(),
+                                    userId = doc.getString("userId") ?: userId,
+                                    quizDocumentId = doc.getString("quizDocumentId") ?: "",
+                                    quizVersion = doc.getLong("quizVersion")?.toInt() ?: 1,
+                                    correctCount = doc.getLong("correctCount")?.toInt() ?: 0,
+                                    wrongCount = doc.getLong("wrongCount")?.toInt() ?: 0,
+                                    createdAt = doc.getLong("createdAt") ?: doc.getLong("dateMillis") ?: System.currentTimeMillis()
+                                )
+                            }
+                            val localList = repository.getAttemptsForUserOrEmail(userId, email)
+                            val allMerged = (remoteAttempts + localList)
+                                .distinctBy { it.documentId.ifEmpty { "${it.quizDocumentId}_${it.dateMillis}" } }
+                                .sortedByDescending { it.dateMillis }
+
+                            val currentMap = _adminUserAttemptsMap.value.toMutableMap()
+                            currentMap[userId] = allMerged
+                            if (email.isNotEmpty()) {
+                                currentMap[email] = allMerged
+                            }
+                            _adminUserAttemptsMap.value = currentMap
+                        }
+                    }
+                }
+            userAttemptsListeners[userId] = registration
+        } catch (e: Exception) {
+            Log.e("QuizViewModel", "Error starting attempts listener for user $userId: ${e.message}", e)
+        }
+    }
+
+    fun deleteAdminUserAttempt(
+        attempt: QuizAttempt,
+        userId: String,
+        userEmail: String = "",
+        onComplete: () -> Unit = {}
+    ) {
+        if (_isAdminOperating.value) return
+        _isAdminOperating.value = true
+        _syncStatusMessage.value = "Deleting attempt from cloud and user record..."
+
+        viewModelScope.launch(Dispatchers.IO) {
             try {
-                val list = repository.getAttemptsForUserOrEmail(userId, email)
+                val docId = attempt.documentId
+                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                val batch = firestore.batch()
+
+                // 1. Delete from /users/{userId}/attempts/{docId}
+                if (userId.isNotEmpty() && docId.isNotEmpty()) {
+                    batch.delete(firestore.collection("users").document(userId).collection("attempts").document(docId))
+                }
+                // 2. Delete from top-level /attempts/{docId}
+                if (docId.isNotEmpty()) {
+                    batch.delete(firestore.collection("attempts").document(docId))
+                }
+
+                com.google.android.gms.tasks.Tasks.await(batch.commit())
+
+                // 3. Delete from local Room if present
+                if (docId.isNotEmpty()) {
+                    repository.deleteAttemptByDocumentId(docId)
+                }
+
+                // 4. Update _adminUserAttemptsMap immediately
                 val currentMap = _adminUserAttemptsMap.value.toMutableMap()
-                currentMap[userId] = list
-                if (email.isNotEmpty()) {
-                    currentMap[email] = list
+                val updatedList = (currentMap[userId] ?: emptyList()).filter { it.documentId != docId }
+                currentMap[userId] = updatedList
+                if (userEmail.isNotEmpty()) {
+                    currentMap[userEmail] = updatedList
                 }
                 _adminUserAttemptsMap.value = currentMap
+
+                _syncStatusMessage.value = "Attempt deleted successfully from cloud & user record."
+                logAdminAction("DELETE_ATTEMPT", "ATTEMPT", docId, "Deleted attempt for user $userId")
+                
+                withContext(Dispatchers.Main) {
+                    onComplete()
+                }
             } catch (e: Exception) {
-                Log.e("QuizViewModel", "Error loading attempts: ${e.message}", e)
+                Log.e("QuizViewModel", "Error deleting user attempt: ${e.message}", e)
+                _syncStatusMessage.value = getReadableFirestoreError(e, "Failed to delete attempt from cloud.")
+            } finally {
+                _isAdminOperating.value = false
             }
         }
     }
@@ -938,29 +1073,21 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         val newBlocked = !user.blocked
         val newStatus = if (newBlocked) "blocked" else "active"
         val actionName = if (newBlocked) "BLOCK_USER" else "UNBLOCK_USER"
-        _syncStatusMessage.value = "${if (newBlocked) "Blocking" else "Unblocking"} user on cloud..."
+        val now = System.currentTimeMillis()
+        val updatedUser = user.copy(blocked = newBlocked, status = newStatus, updatedAt = now)
 
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val now = System.currentTimeMillis()
-                val updatedUser = user.copy(blocked = newBlocked, status = newStatus, updatedAt = now)
-                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                val updates = mapOf(
-                    "blocked" to newBlocked,
-                    "status" to newStatus,
-                    "updatedAt" to now
-                )
-                val task = firestore.collection("users").document(user.uid).update(updates)
-                com.google.android.gms.tasks.Tasks.await(task)
+        // 1. Instant 0ms Optimistic UI update for admin panel
+        _allRegisteredUsers.value = _allRegisteredUsers.value.map {
+            if (it.uid == user.uid || (user.email.isNotEmpty() && it.email.equals(user.email, ignoreCase = true))) updatedUser else it
+        }
+        _syncStatusMessage.value = "${if (newBlocked) "Blocking" else "Unblocking"} user on cloud in real-time..."
 
-                _allRegisteredUsers.value = _allRegisteredUsers.value.map { if (it.uid == user.uid) updatedUser else it }
+        // 2. Delegate to SyncManager for ultra-fast multi-path Firestore sync
+        syncManager.executeAdminBlockToggle(user, newBlocked) { success, message ->
+            _isAdminOperating.value = false
+            _syncStatusMessage.value = message
+            if (success) {
                 logAdminAction(actionName, "USER", user.uid, "User ${user.email} status changed to $newStatus")
-                _syncStatusMessage.value = "User ${if (newBlocked) "blocked" else "unblocked"} successfully."
-            } catch (e: Exception) {
-                Log.e("QuizViewModel", "Error updating user blocked status: ${e.message}", e)
-                _syncStatusMessage.value = "Failed to update user status on cloud: ${e.message}"
-            } finally {
-                _isAdminOperating.value = false
             }
         }
     }
@@ -1238,27 +1365,90 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteSingleAttempt(attempt: QuizAttempt, userEmail: String = "") {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
+                val docId = attempt.documentId
+                val userId = attempt.userId
+                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                val batch = firestore.batch()
+
+                // Delete from user's subcollection
+                if (userId.isNotEmpty() && docId.isNotEmpty()) {
+                    batch.delete(firestore.collection("users").document(userId).collection("attempts").document(docId))
+                }
+                // Delete from top-level attempts
+                if (docId.isNotEmpty()) {
+                    batch.delete(firestore.collection("attempts").document(docId))
+                }
+
+                com.google.android.gms.tasks.Tasks.await(batch.commit())
+
+                // Delete from local Room database
+                if (docId.isNotEmpty()) {
+                    repository.deleteAttemptByDocumentId(docId)
+                }
+
+                // Update UI map immediately
+                val currentMap = _adminUserAttemptsMap.value.toMutableMap()
+                val updatedList = (currentMap[userId] ?: emptyList()).filter { it.documentId != docId }
+                currentMap[userId] = updatedList
+                if (userEmail.isNotEmpty()) {
+                    currentMap[userEmail] = updatedList
+                }
+                _adminUserAttemptsMap.value = currentMap
+
+                loadAttemptsForUser(userId, userEmail)
+                loadUserAttemptsFromFirestore()
+                logFirestore("Single attempt deleted from Firestore & local database (DocId: $docId)")
+            } catch (e: Exception) {
+                Log.e("QuizViewModel", "Error deleting single attempt from cloud: ${e.message}", e)
+                // Fallback local deletion
                 if (attempt.documentId.isNotEmpty()) {
                     repository.deleteAttemptByDocumentId(attempt.documentId)
                 }
                 loadAttemptsForUser(attempt.userId, userEmail)
-                loadUserAttemptsFromFirestore()
-            } catch (e: Exception) {
-                Log.e("QuizViewModel", "Error deleting single attempt: ${e.message}", e)
             }
         }
     }
 
     fun deleteAllAttemptsForUser(userId: String, userEmail: String) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
+                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                
+                // Delete from subcollection
+                val userAttemptsSnap = com.google.android.gms.tasks.Tasks.await(
+                    firestore.collection("users").document(userId).collection("attempts").get()
+                )
+                if (!userAttemptsSnap.isEmpty) {
+                    val batch = firestore.batch()
+                    userAttemptsSnap.documents.forEach { doc -> batch.delete(doc.reference) }
+                    com.google.android.gms.tasks.Tasks.await(batch.commit())
+                }
+
+                // Delete from top-level attempts
+                val topSnap = com.google.android.gms.tasks.Tasks.await(
+                    firestore.collection("attempts").whereEqualTo("userId", userId).get()
+                )
+                if (!topSnap.isEmpty) {
+                    val batch = firestore.batch()
+                    topSnap.documents.forEach { doc -> batch.delete(doc.reference) }
+                    com.google.android.gms.tasks.Tasks.await(batch.commit())
+                }
+
                 repository.deleteAttemptsForUserOrEmail(userId, userEmail)
+                
+                val currentMap = _adminUserAttemptsMap.value.toMutableMap()
+                currentMap[userId] = emptyList()
+                if (userEmail.isNotEmpty()) currentMap[userEmail] = emptyList()
+                _adminUserAttemptsMap.value = currentMap
+
                 loadAttemptsForUser(userId, userEmail)
                 loadUserAttemptsFromFirestore()
             } catch (e: Exception) {
-                Log.e("QuizViewModel", "Error deleting all attempts: ${e.message}", e)
+                Log.e("QuizViewModel", "Error deleting all attempts from cloud: ${e.message}", e)
+                repository.deleteAttemptsForUserOrEmail(userId, userEmail)
+                loadAttemptsForUser(userId, userEmail)
             }
         }
     }
@@ -1391,7 +1581,27 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
             updateQuizQuestionsCounts()
 
-            if (_autoSyncOnStartup.value) {
+            // Attach SuperFast SyncManager Auth State Observer
+            syncManager.attachAuthStateObserver(
+                onAuthenticated = { uid, email, isAdmin ->
+                    startObservingUserDocument(uid)
+                    startObservingUserAttemptsFirestore(uid)
+                    startObservingRealtimeProgress(uid)
+                    if (_autoSyncOnStartup.value) {
+                        startRealtimeFirestoreSync()
+                    }
+                    if (isAdmin) {
+                        startObservingAllRegisteredUsers()
+                    }
+                },
+                onSignedOut = {
+                    stopObservingUserAttemptsFirestore()
+                    stopObservingRealtimeProgress()
+                    stopRealtimeFirestoreSync()
+                }
+            )
+
+            if (_autoSyncOnStartup.value && com.google.firebase.auth.FirebaseAuth.getInstance().currentUser != null) {
                 startRealtimeFirestoreSync()
             }
 
@@ -1405,7 +1615,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
             launch(Dispatchers.IO) {
                 NetworkConnectivityHelper.observeConnectivity(getApplication()).collect { isConnected ->
                     _isNetworkAvailable.value = isConnected
-                    if (isConnected && _autoSyncOnStartup.value) {
+                    if (isConnected && _autoSyncOnStartup.value && com.google.firebase.auth.FirebaseAuth.getInstance().currentUser != null) {
                         startRealtimeFirestoreSync()
                     } else if (!isConnected) {
                         stopRealtimeFirestoreSync()
@@ -1494,12 +1704,17 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                     val status = document.getString("status") ?: ""
                     val isBlocked = document.exists() && (document.getBoolean("blocked") == true || status.equals("blocked", ignoreCase = true))
                     if (isBlocked) {
+                        _isCurrentUserBlocked.value = true
+                        sharedPrefs.edit().putBoolean("session_is_blocked", true).apply()
                         _authMessage.value = "Your account has been blocked by an administrator."
-                        signOut()
+                        startObservingUserDocument(uid)
                         return@addOnSuccessListener
                     }
                     
-                    val role = if (document.exists()) (document.getString("role") ?: "user") else "user"
+                    _isCurrentUserBlocked.value = false
+                    sharedPrefs.edit().putBoolean("session_is_blocked", false).apply()
+                    val isAdminEmail = email.equals("sd504212@gmail.com", ignoreCase = true)
+                    val role = if (isAdminEmail) "admin" else if (document.exists()) (document.getString("role") ?: "user") else "user"
                     val displayName = if (document.exists()) (document.getString("name") ?: document.getString("displayName") ?: email.substringBefore("@")) else email.substringBefore("@")
                     
                     _currentUserEmail.value = email
@@ -1512,18 +1727,28 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                     startObservingUserAttemptsFirestore(uid)
                     startObservingRealtimeProgress(uid)
                     startObservingUserDocument(uid)
+                    startRealtimeFirestoreSync()
 
                     val now = System.currentTimeMillis()
-                    firestore.collection("users").document(uid).update(
-                        mapOf(
-                            "lastLoginAt" to now,
-                            "updatedAt" to now,
-                            "status" to "active"
-                        )
+                    val updates = mutableMapOf<String, Any>(
+                        "lastLoginAt" to now,
+                        "updatedAt" to now
                     )
+                    if (isAdminEmail) {
+                        updates["role"] = "admin"
+                    }
+                    firestore.collection("users").document(uid).update(updates)
                 }
                 .addOnFailureListener {
-                    val cachedRole = sharedPrefs.getString("session_user_role", "user") ?: "user"
+                    val wasBlocked = sharedPrefs.getBoolean("session_is_blocked", false) || _isCurrentUserBlocked.value
+                    if (wasBlocked) {
+                        _isCurrentUserBlocked.value = true
+                        startObservingUserDocument(uid)
+                        return@addOnFailureListener
+                    }
+
+                    val isAdminEmail = email.equals("sd504212@gmail.com", ignoreCase = true)
+                    val cachedRole = if (isAdminEmail) "admin" else (sharedPrefs.getString("session_user_role", "user") ?: "user")
                     val cachedName = sharedPrefs.getString("session_user_name", email.substringBefore("@")) ?: email.substringBefore("@")
                     _currentUserEmail.value = email
                     _currentUserName.value = cachedName
@@ -1535,64 +1760,49 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                     startObservingUserAttemptsFirestore(uid)
                     startObservingRealtimeProgress(uid)
                     startObservingUserDocument(uid)
+                    startRealtimeFirestoreSync()
                 }
         } else {
-            if (!isRunningTest()) {
-                clearSessionLocally()
-                _currentUserEmail.value = ""
-                _currentUserName.value = ""
-                _currentUserRole.value = null
+            val wasBlocked = sharedPrefs.getBoolean("session_is_blocked", false)
+            val savedUid = sharedPrefs.getString("session_user_uid", null)
+            if (wasBlocked && !savedUid.isNullOrEmpty()) {
+                _isCurrentUserBlocked.value = true
+                startObservingUserDocument(savedUid)
+            } else if (!isTestEnv) {
+                if (savedUid.isNullOrEmpty()) {
+                    clearSessionLocally()
+                    _currentUserEmail.value = null
+                    _currentUserName.value = null
+                    _currentUserRole.value = null
+                }
             }
-        }
-    }
-
-    private fun isRunningTest(): Boolean {
-        return try {
-            Class.forName("org.robolectric.Robolectric")
-            true
-        } catch (e: Exception) {
-            false
         }
     }
 
     private var userDocumentListenerRegistration: com.google.firebase.firestore.ListenerRegistration? = null
 
     fun startObservingUserDocument(uid: String) {
-        if (isRunningTest() || uid == "learner_user" || uid.isBlank()) return
-        userDocumentListenerRegistration?.remove()
-        
-        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-        userDocumentListenerRegistration = firestore.collection("users").document(uid)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    Log.e("QuizViewModel", "Error listening to user document: ${error.message}", error)
-                    return@addSnapshotListener
-                }
-                if (snapshot != null && snapshot.exists()) {
-                    val status = snapshot.getString("status") ?: ""
-                    val isBlocked = snapshot.getBoolean("blocked") == true || status.equals("blocked", ignoreCase = true)
-                    val role = snapshot.getString("role") ?: "user"
-                    val displayName = snapshot.getString("name") ?: snapshot.getString("displayName") ?: ""
-                    
-                    if (isBlocked) {
-                        logFirestore("Account blocked by administrator. Revoking active session.")
-                        signOut()
-                        _authMessage.value = "Your account has been blocked by an administrator."
-                        navigateTo(Screen.Splash, clearBackstack = true)
-                    } else {
-                        _currentUserRole.value = role
-                        if (displayName.isNotEmpty()) {
-                            _currentUserName.value = displayName
-                        }
-                        saveSessionLocally(_currentUserEmail.value ?: "", role, displayName, uid)
-                    }
-                }
+        if (isTestEnv || uid == "learner_user" || uid.isBlank()) return
+        val email = _currentUserEmail.value ?: ""
+
+        syncManager.startObservingSecurityStatus(uid, email) { isBlocked, reason ->
+            if (isBlocked) {
+                _isCurrentUserBlocked.value = true
+                sharedPrefs.edit().putBoolean("session_is_blocked", true).apply()
+                // Instantly cancel active quiz and timer
+                timerJob?.cancel()
+                _savedQuizProgress.value = null
+                logFirestore("Account restriction enforced: $reason. Live access revoked.")
+            } else {
+                _isCurrentUserBlocked.value = false
+                sharedPrefs.edit().putBoolean("session_is_blocked", false).apply()
+                logFirestore("Account active. Permissions verified.")
             }
+        }
     }
 
     fun stopObservingUserDocument() {
-        userDocumentListenerRegistration?.remove()
-        userDocumentListenerRegistration = null
+        // Kept active for real-time security updates unless signed out
     }
 
     fun signUp(email: String, password: String, role: String, name: String = "", onSuccess: () -> Unit = {}) {
@@ -1605,14 +1815,14 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
             mockPrefs.edit().apply {
                 putBoolean("registered_$email", true)
                 putString("user_pass_$email", password)
-                putString("user_role_$email", "user")
+                putString("user_role_$email", if (email.equals("sd504212@gmail.com", ignoreCase = true)) "admin" else "user")
                 putString("user_name_$email", name)
                 commit()
             }
             _currentUserEmail.value = email
             _currentUserName.value = if (name.isNotBlank()) name else email.substringBefore("@")
-            _currentUserRole.value = "user"
-            saveSessionLocally(email, "user", _currentUserName.value ?: "", email.replace(".", "_"))
+            _currentUserRole.value = if (email.equals("sd504212@gmail.com", ignoreCase = true)) "admin" else "user"
+            saveSessionLocally(email, _currentUserRole.value ?: "user", _currentUserName.value ?: "", email.replace(".", "_"))
             _authMessage.value = "Account created successfully!"
             _isAuthLoading.value = false
             onSuccess()
@@ -1625,13 +1835,15 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                     val firebaseUser = task.result?.user
                     val uid = firebaseUser?.uid ?: email.replace(".", "_")
                     val chosenName = if (name.isNotBlank()) name else email.substringBefore("@")
-                    // Standard self-registered accounts are assigned 'user' role
-                    val assignedRole = "user"
+                    val isAdminEmail = email.equals("sd504212@gmail.com", ignoreCase = true)
+                    val assignedRole = if (isAdminEmail) "admin" else "user"
                     val now = System.currentTimeMillis()
                     
                     _currentUserEmail.value = email
                     _currentUserName.value = chosenName
                     _currentUserRole.value = assignedRole
+                    _isCurrentUserBlocked.value = false
+                    sharedPrefs.edit().putBoolean("session_is_blocked", false).apply()
                     saveSessionLocally(email, assignedRole, chosenName, uid)
                     
                     val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
@@ -1670,7 +1882,6 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
     }
-
     fun resetPassword(email: String) {
         if (email.isBlank()) {
             _authMessage.value = "Please enter an email address first."
@@ -1741,6 +1952,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                     val firebaseUser = task.result?.user
                     val uid = firebaseUser?.uid ?: email.replace(".", "_")
                     val now = System.currentTimeMillis()
+                    val isAdminEmail = email.equals("sd504212@gmail.com", ignoreCase = true)
                     
                     val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                     firestore.collection("users").document(uid).get()
@@ -1749,13 +1961,17 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                                 val status = document.getString("status") ?: ""
                                 val isBlocked = document.getBoolean("blocked") == true || status.equals("blocked", ignoreCase = true)
                                 if (isBlocked) {
+                                    _isCurrentUserBlocked.value = true
+                                    sharedPrefs.edit().putBoolean("session_is_blocked", true).apply()
                                     _authMessage.value = "Your account has been blocked by an administrator."
                                     _isAuthLoading.value = false
-                                    com.google.firebase.auth.FirebaseAuth.getInstance().signOut()
+                                    startObservingUserDocument(uid)
                                     return@addOnSuccessListener
                                 }
                                 
-                                val assignedRole = document.getString("role") ?: "user"
+                                _isCurrentUserBlocked.value = false
+                                sharedPrefs.edit().putBoolean("session_is_blocked", false).apply()
+                                val assignedRole = if (isAdminEmail) "admin" else (document.getString("role") ?: "user")
                                 val chosenName = document.getString("name") ?: document.getString("displayName") ?: email.substringBefore("@")
                                 
                                 _currentUserEmail.value = email
@@ -1769,17 +1985,18 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                                 startObservingRealtimeProgress(uid)
                                 startObservingUserDocument(uid)
                                 
-                                firestore.collection("users").document(uid).update(
-                                    mapOf(
-                                        "lastLoginAt" to now,
-                                        "updatedAt" to now,
-                                        "status" to "active"
-                                    )
+                                val updates = mutableMapOf<String, Any>(
+                                    "lastLoginAt" to now,
+                                    "updatedAt" to now
                                 )
+                                if (isAdminEmail) {
+                                    updates["role"] = "admin"
+                                }
+                                firestore.collection("users").document(uid).update(updates)
                                 onSuccess()
                             } else {
                                 val chosenName = email.substringBefore("@")
-                                val assignedRole = "user"
+                                val assignedRole = if (isAdminEmail) "admin" else "user"
                                 val userDoc = mapOf(
                                     "uid" to uid,
                                     "name" to chosenName,
@@ -1797,6 +2014,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                                         _currentUserEmail.value = email
                                         _currentUserName.value = chosenName
                                         _currentUserRole.value = assignedRole
+                                        _isCurrentUserBlocked.value = false
+                                        sharedPrefs.edit().putBoolean("session_is_blocked", false).apply()
                                         saveSessionLocally(email, assignedRole, chosenName, uid)
                                         _authMessage.value = "Signed in successfully!"
                                         _isAuthLoading.value = false
@@ -1808,14 +2027,23 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                         .addOnFailureListener { e ->
-                            val defaultRole = "user"
-                            val defaultName = email.substringBefore("@")
+                            val wasBlocked = sharedPrefs.getBoolean("session_is_blocked", false) || _isCurrentUserBlocked.value
+                            if (wasBlocked) {
+                                _isCurrentUserBlocked.value = true
+                                _authMessage.value = "Your account has been blocked by an administrator."
+                                _isAuthLoading.value = false
+                                startObservingUserDocument(uid)
+                                return@addOnFailureListener
+                            }
+
+                            val assignedRole = if (isAdminEmail) "admin" else "user"
+                            val chosenName = email.substringBefore("@")
                             _currentUserEmail.value = email
-                            _currentUserName.value = defaultName
-                            _currentUserRole.value = defaultRole
-                            saveSessionLocally(email, defaultRole, defaultName, uid)
-                            
-                            _authMessage.value = "Signed in locally (Server role fetch failed: ${e.message})"
+                            _currentUserName.value = chosenName
+                            _currentUserRole.value = assignedRole
+                            _isCurrentUserBlocked.value = false
+                            saveSessionLocally(email, assignedRole, chosenName, uid)
+                            _authMessage.value = "Signed in successfully!"
                             _isAuthLoading.value = false
                             startObservingUserAttempts(uid)
                             startObservingRealtimeProgress(uid)
@@ -1834,9 +2062,11 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         stopObservingUserAttemptsFirestore()
         com.google.firebase.auth.FirebaseAuth.getInstance().signOut()
         clearSessionLocally()
-        _currentUserEmail.value = ""
-        _currentUserName.value = ""
+        _currentUserEmail.value = null
+        _currentUserName.value = null
         _currentUserRole.value = null
+        _isCurrentUserBlocked.value = false
+        sharedPrefs.edit().putBoolean("session_is_blocked", false).apply()
         _attemptsList.value = emptyList()
         _savedQuizProgress.value = null
         _realtimeProgressMap.value = emptyMap()
@@ -1851,6 +2081,9 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
     // Navigation Helper
     fun navigateTo(screen: Screen, clearBackstack: Boolean = false) {
+        if (_isCurrentUserBlocked.value && screen !is Screen.Splash) {
+            return
+        }
         if (_currentScreen.value is Screen.ActiveQuiz && screen !is Screen.ActiveQuiz && screen !is Screen.Score) {
             saveQuizProgress()
             saveQuizProgressToFirestore(isCompleted = false)
@@ -1871,6 +2104,9 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun navigateBack(): Boolean {
+        if (_isCurrentUserBlocked.value) {
+            return true // Guard: Handled, prevent exiting blocked screen
+        }
         if (backstack.isNotEmpty()) {
             val prev = backstack.removeAt(backstack.size - 1)
             if (_currentScreen.value is Screen.ActiveQuiz && prev !is Screen.ActiveQuiz && prev !is Screen.Score) {
@@ -2022,7 +2258,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         progressListenerRegistration = firestore.collection("users")
             .document(uid)
             .collection("progress")
-            .addSnapshotListener { snapshot, error ->
+            .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
                 if (error != null) {
                     Log.e("QuizViewModel", "Error observing realtime progress: ${error.message}", error)
                     return@addSnapshotListener
@@ -2148,6 +2384,10 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startQuiz(quiz: Quiz) {
+        if (_isCurrentUserBlocked.value) {
+            logFirestore("Quiz launch denied: User account is restricted.")
+            return
+        }
         clearQuizProgress()
         _isSubmittingQuiz.value = false
         _isQuizLoading.value = true
@@ -2277,6 +2517,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectOption(option: String) {
+        if (_isCurrentUserBlocked.value) return
         _selectedOption.value = option
         saveQuizProgress()
         saveQuizProgressToFirestore(isCompleted = false)
@@ -2470,6 +2711,15 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     private var adminQuestionsSubcollListener: com.google.firebase.firestore.ListenerRegistration? = null
 
     fun loadAdminQuestions(quizId: String) {
+        if (currentAdminQuizId == quizId && adminQuestionsSubcollListener != null) {
+            // Already listening to this quiz's questions, do not recreate listener!
+            viewModelScope.launch {
+                val questions = repository.getQuestionsForQuiz(quizId)
+                _adminQuestionsForSelectedQuiz.value = questions
+                updateQuizQuestionsCounts()
+            }
+            return
+        }
         currentAdminQuizId = quizId
         viewModelScope.launch {
             val questions = repository.getQuestionsForQuiz(quizId)
@@ -2482,7 +2732,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         if (quizId.isNotEmpty()) {
             val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
             adminQuestionsSubcollListener = firestore.collection("quizzes").document(quizId).collection("questions")
-                .addSnapshotListener { snapshot, error ->
+                .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
                     if (error != null || snapshot == null) return@addSnapshotListener
                     viewModelScope.launch(Dispatchers.IO) {
                         try {

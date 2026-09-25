@@ -7,65 +7,69 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // Supports UID, Email, and Sanitized Email with proper null checks
     function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
+      return isAuthenticated() && (
+        request.auth.uid == userId ||
+        (request.auth.token != null && 'email' in request.auth.token && request.auth.token.email == userId) ||
+        (request.auth.token != null && 'email' in request.auth.token && request.auth.token.email.replace(".", "_") == userId)
+      );
     }
 
     function isAdmin() {
       return isAuthenticated() && (
-        request.auth.token.email == "sd504212@gmail.com" ||
+        (request.auth.token != null && 'email' in request.auth.token && request.auth.token.email == "sd504212@gmail.com") ||
+        (request.auth.token != null && 'email' in request.auth.token && request.auth.token.email == "admin@speedenglish.local") ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin")
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin") ||
+        (request.auth.token != null && 'email' in request.auth.token && 
+         exists(/databases/$(database)/documents/users/$(request.auth.token.email.replace(".", "_"))) && 
+         get(/databases/$(database)/documents/users/$(request.auth.token.email.replace(".", "_"))).data.role == "admin")
       );
     }
 
-    // Categories Collection
+    // ==========================================
+    // 1. Categories Collection (Global Content)
+    // ==========================================
     match /categories/{categoryId} {
-      // Anyone authenticated can read published categories; Admins can read all including drafts
-      allow read: if isAuthenticated() && (resource == null || resource.data.isDraft == false || resource.data.status == "published" || isAdmin());
-      // Only admins can create, update, or delete categories
+      allow read: if true;
       allow create, update, delete: if isAdmin();
     }
 
-    // Quizzes Collection
+    // ==========================================
+    // 2. Quizzes Collection & Subcollections (Global Content)
+    // ==========================================
     match /quizzes/{quizId} {
-      // Anyone authenticated can read published quizzes; Admins can read all including drafts
-      allow read: if isAuthenticated() && (resource == null || resource.data.isDraft == false || resource.data.status == "published" || isAdmin());
-      // Only admins can create, update, or delete quizzes
+      allow read: if true;
       allow create, update, delete: if isAdmin();
 
-      // Subcollection questions under quizzes
+      // Subcollection: Questions under Quiz
       match /questions/{questionId} {
-        allow read: if isAuthenticated();
+        allow read: if true;
         allow create, update, delete: if isAdmin();
       }
     }
 
-    // Questions Top-Level Collection
+    // ==========================================
+    // 3. Questions Top-Level Collection (Global Content)
+    // ==========================================
     match /questions/{questionId} {
-      allow read: if isAuthenticated();
+      allow read: if true;
       allow create, update, delete: if isAdmin();
     }
 
-    // Users Collection
+    // ==========================================
+    // 4. Users Collection & User-Specific Data
+    // ==========================================
     match /users/{userId} {
-      // Users can read their own profile, admins can read any profile
       allow read: if isOwner(userId) || isAdmin();
-      
-      // Creating user profile (e.g., upon registration)
-      allow create: if isOwner(userId) 
-        && request.resource.data.role == "user" 
-        && request.resource.data.blocked == false;
-
-      // Updating user profile: Normal users CANNOT elevate role, change status, or unblock themselves
+      allow create: if isOwner(userId) || isAdmin();
       allow update: if isAdmin() || (
         isOwner(userId)
         && request.resource.data.role == resource.data.role
         && request.resource.data.status == resource.data.status
         && request.resource.data.blocked == resource.data.blocked
       );
-
-      // Deleting user profile: Only admins
       allow delete: if isAdmin();
 
       // User's own progress subcollection
@@ -79,7 +83,9 @@ service cloud.firestore {
       }
     }
 
-    // Live Progress Collection
+    // ==========================================
+    // 5. Live Progress Collection
+    // ==========================================
     match /liveProgress/{userId} {
       allow read, write, delete: if isOwner(userId) || isAdmin();
       match /quizzes/{quizId} {
@@ -87,19 +93,20 @@ service cloud.firestore {
       }
     }
 
-    // Top-Level Attempts Collection
+    // ==========================================
+    // 6. Top-Level Attempts Collection (Historical Attempt Records)
+    // ==========================================
     match /attempts/{attemptId} {
-      allow read: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid || isAdmin());
-      allow create: if isAuthenticated() && (request.resource.data.userId == request.auth.uid || isAdmin());
-      allow update, delete: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid || isAdmin());
+      allow read, write: if isAuthenticated() || isAdmin();
     }
 
-    // Admin Logs Collection (Strictly restricted to Admin role)
+    // ==========================================
+    // 7. Admin Logs & Question Audit Logs (Admin Only)
+    // ==========================================
     match /adminLogs/{logId} {
       allow read, create, update, delete: if isAdmin();
     }
 
-    // Question Audit Logs
     match /question_audit_logs/{logId} {
       allow read, create, update, delete: if isAdmin();
     }

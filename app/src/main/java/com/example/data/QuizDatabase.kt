@@ -3,7 +3,7 @@ package com.example.data
 import android.content.Context
 import androidx.room.*
 
-@Database(entities = [Category::class, Quiz::class, Question::class, QuizAttempt::class, QuestionAuditLog::class], version = 16, exportSchema = false)
+@Database(entities = [Category::class, Quiz::class, Question::class, QuizAttempt::class, QuestionAuditLog::class], version = 18, exportSchema = false)
 abstract class QuizDatabase : RoomDatabase() {
 
     abstract fun quizDao(): QuizDao

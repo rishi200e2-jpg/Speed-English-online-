@@ -719,7 +719,11 @@ fun MainQuizApp(
                         }
                     )
             ) {
-                if (currentUserRole == null && currentScreen !is Screen.Splash) {
+                val isCurrentUserBlocked by viewModel.isCurrentUserBlocked.collectAsState()
+
+                if (isCurrentUserBlocked) {
+                    BlockedAccountScreen(viewModel = viewModel)
+                } else if (currentUserRole == null && currentScreen !is Screen.Splash) {
                     // Anonymous Guest Profile: Interface access is locked strictly to the Login and Registration screens.
                     AuthScreen(viewModel = viewModel)
                 } else {
@@ -1069,10 +1073,15 @@ fun AuthScreen(viewModel: QuizViewModel) {
 
 @Composable
 fun SplashScreen(viewModel: QuizViewModel) {
-    // Navigate automatically to Home after 2.5 seconds
-    LaunchedEffect(Unit) {
-        delay(2500)
-        viewModel.navigateTo(Screen.Home, clearBackstack = true)
+    val isCurrentUserBlocked by viewModel.isCurrentUserBlocked.collectAsState()
+    // Navigate automatically to Home after 2.5 seconds ONLY if not blocked
+    LaunchedEffect(isCurrentUserBlocked) {
+        if (!isCurrentUserBlocked) {
+            delay(2500)
+            if (!viewModel.isCurrentUserBlocked.value) {
+                viewModel.navigateTo(Screen.Home, clearBackstack = true)
+            }
+        }
     }
 
     Box(
@@ -8343,6 +8352,9 @@ fun CloudDatabaseSyncSection(viewModel: QuizViewModel) {
 
     Spacer(modifier = Modifier.height(12.dp))
 
+    var consoleTab by varRemember { mutableStateOf(1) } // 0: Raw Console, 1: Latency Interceptor
+    val interceptorLogs by viewModel.interceptorLogs.collectAsState()
+
     // 3. FIRESTORE DIAGNOSTIC TERMINAL
     Card(
         modifier = Modifier
@@ -8359,71 +8371,198 @@ fun CloudDatabaseSyncSection(viewModel: QuizViewModel) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Box(
                         modifier = Modifier
                             .size(8.dp)
                             .clip(CircleShape)
                             .background(Color(0xFF22C55E)) // Pulsing Green Dot
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "SERVER DIAGNOSTIC TERMINAL",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 11.sp,
-                        color = Color(0xFFE2E8F0)
-                    )
+                    
+                    // Console Tab Switcher buttons
+                    Row(
+                        modifier = Modifier
+                            .background(Color(0xFF1E293B), RoundedCornerShape(6.dp))
+                            .padding(2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = "INTERCEPTOR",
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(if (consoleTab == 1) Color(0xFF475569) else Color.Transparent)
+                                .clickable { consoleTab = 1 }
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            color = if (consoleTab == 1) Color.White else Color(0xFF94A3B8),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "RAW SYSTEM",
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(if (consoleTab == 0) Color(0xFF475569) else Color.Transparent)
+                                .clickable { consoleTab = 0 }
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            color = if (consoleTab == 0) Color.White else Color(0xFF94A3B8),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
                 TextButton(
                     onClick = { viewModel.clearDiagnosticLogs() },
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                 ) {
-                    Text("Clear Console", color = Color(0xFF94A3B8), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("Clear Logs", color = Color(0xFF94A3B8), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(200.dp)
+                    .height(240.dp)
                     .background(Color(0xFF020617), RoundedCornerShape(8.dp))
                     .padding(8.dp)
             ) {
-                if (firestoreLogs.isEmpty()) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "Terminal active. Perform any CRUD actions (add/delete category, quiz, or question) or manual sync to see live server transaction logging.",
-                            color = Color(0xFF475569),
-                            fontSize = 11.sp,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(horizontal = 16.dp)
-                        )
+                if (consoleTab == 1) {
+                    if (interceptorLogs.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Firestore Logging Interceptor active.\nWrites, reads, and metadata state changes will appear here with calculated millisecond latency in real-time.",
+                                color = Color(0xFF475569),
+                                fontSize = 11.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                lineHeight = 16.sp
+                            )
+                        }
+                    } else {
+                        androidx.compose.foundation.lazy.LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(interceptorLogs.size) { idx ->
+                                val log = interceptorLogs[idx]
+                                val opColor = when (log.operation) {
+                                    "WRITE", "BATCH_WRITE" -> Color(0xFFF59E0B) // Amber
+                                    "READ" -> Color(0xFFA855F7) // Purple
+                                    "LISTENER" -> Color(0xFF06B6D4) // Cyan
+                                    else -> Color(0xFF10B981) // Green
+                                }
+                                val sourceColor = when {
+                                    log.source.contains("PENDING") -> Color(0xFFF59E0B) // Amber
+                                    log.source.contains("CACHE") -> Color(0xFF38BDF8) // Bright Cyan
+                                    else -> Color(0xFF22C55E) // Green
+                                }
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color(0xFF0F172A).copy(alpha = 0.5f), RoundedCornerShape(4.dp))
+                                        .border(0.5.dp, Color(0xFF1E293B), RoundedCornerShape(4.dp))
+                                        .padding(6.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = "[${log.timeString}]",
+                                                color = Color(0xFF64748B),
+                                                fontSize = 9.sp,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = log.operation,
+                                                color = opColor,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Black,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                            )
+                                        }
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = log.source,
+                                                color = sourceColor,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "${log.latencyMs}ms",
+                                                color = Color(0xFF94A3B8),
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(3.dp))
+                                    Text(
+                                        text = "Path: ${log.path}",
+                                        color = Color(0xFFE2E8F0),
+                                        fontSize = 10.sp,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        text = log.details,
+                                        color = Color(0xFF94A3B8),
+                                        fontSize = 9.sp,
+                                        lineHeight = 12.sp,
+                                        modifier = Modifier.padding(top = 1.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 } else {
-                    androidx.compose.foundation.lazy.LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        items(firestoreLogs.size) { idx ->
-                            val log = firestoreLogs[idx]
-                            val logColor = when {
-                                log.contains("FAILED", ignoreCase = true) || log.contains("failed", ignoreCase = true) || log.contains("Error", ignoreCase = true) -> Color(0xFFEF4444) // Red
-                                log.contains("SUCCESS", ignoreCase = true) || log.contains("success", ignoreCase = true) -> Color(0xFF22C55E) // Green
-                                log.contains("Bypassing", ignoreCase = true) -> Color(0xFFF59E0B) // Amber
-                                else -> Color(0xFF38BDF8) // Bright Cyan Info
-                            }
+                    if (firestoreLogs.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
                             Text(
-                                text = log,
-                                color = logColor,
-                                fontSize = 10.sp,
-                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                lineHeight = 13.sp
+                                text = "Terminal active. Perform any CRUD actions (add/delete category, quiz, or question) or manual sync to see live server transaction logging.",
+                                color = Color(0xFF475569),
+                                fontSize = 11.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 16.dp)
                             )
+                        }
+                    } else {
+                        androidx.compose.foundation.lazy.LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            items(firestoreLogs.size) { idx ->
+                                val log = firestoreLogs[idx]
+                                val logColor = when {
+                                    log.contains("FAILED", ignoreCase = true) || log.contains("failed", ignoreCase = true) || log.contains("Error", ignoreCase = true) -> Color(0xFFEF4444) // Red
+                                    log.contains("SUCCESS", ignoreCase = true) || log.contains("success", ignoreCase = true) -> Color(0xFF22C55E) // Green
+                                    log.contains("Bypassing", ignoreCase = true) -> Color(0xFFF59E0B) // Amber
+                                    else -> Color(0xFF38BDF8) // Bright Cyan Info
+                                }
+                                Text(
+                                    text = log,
+                                    color = logColor,
+                                    fontSize = 10.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    lineHeight = 13.sp
+                                )
+                            }
                         }
                     }
                 }
@@ -8991,6 +9130,34 @@ fun AdminUsersContent(
                     Text(text = "Admins", fontSize = 11.sp, color = Color(0xFFD97706), fontWeight = FontWeight.Bold)
                     Text(text = "$adminCount", fontSize = 20.sp, fontWeight = FontWeight.Black, color = Color(0xFFB45309))
                 }
+            }
+        }
+
+        val syncStatus by viewModel.syncManager.syncStatus.collectAsState()
+        val isSyncActive by viewModel.syncManager.isLiveSyncActive.collectAsState()
+
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = if (isSyncActive) Color(0xFFECFDF5) else Color(0xFFEFF6FF),
+            border = BorderStroke(1.dp, if (isSyncActive) Color(0xFFA7F3D0) else Color(0xFFBFDBFE)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(if (isSyncActive) Color(0xFF10B981) else Color(0xFF3B82F6), CircleShape)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "SyncManager: $syncStatus",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (isSyncActive) Color(0xFF065F46) else Color(0xFF1E40AF)
+                )
             }
         }
 
@@ -9672,6 +9839,115 @@ fun QuizAttemptHistoryRow(
                         tint = MaterialTheme.colorScheme.error.copy(alpha = 0.85f),
                         modifier = Modifier.size(16.dp)
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun BlockedAccountScreen(
+    viewModel: QuizViewModel,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 480.dp),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(72.dp)
+                            .background(Color(0xFFFEE2E2), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Block,
+                            contentDescription = "Blocked",
+                            tint = Color(0xFFDC2626),
+                            modifier = Modifier.size(40.dp)
+                        )
+                    }
+
+                    Text(
+                        text = "Account Suspended",
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Black,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+
+                    Text(
+                        text = "Your account has been restricted by an administrator. You currently do not have permission to access Speed English quizzes or study modules.",
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        lineHeight = 20.sp
+                    )
+
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Email,
+                                contentDescription = "Email",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Support: sd504212@gmail.com",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Button(
+                        onClick = {
+                            viewModel.signOut()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary
+                        )
+                    ) {
+                        Icon(Icons.Default.Logout, contentDescription = "Sign Out", modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Sign Out / Switch Account", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    }
                 }
             }
         }

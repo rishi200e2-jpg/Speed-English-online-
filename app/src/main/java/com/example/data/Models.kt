@@ -1,7 +1,6 @@
 package com.example.data
 
 import androidx.room.Entity
-import androidx.room.ForeignKey
 import androidx.room.PrimaryKey
 import androidx.room.Index
 
@@ -20,14 +19,6 @@ data class Category(
 
 @Entity(
     tableName = "quizzes",
-    foreignKeys = [
-        ForeignKey(
-            entity = Category::class,
-            parentColumns = ["documentId"],
-            childColumns = ["categoryId"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
     indices = [
         Index(value = ["categoryId"])
     ]
@@ -51,14 +42,6 @@ data class Quiz(
 
 @Entity(
     tableName = "questions",
-    foreignKeys = [
-        ForeignKey(
-            entity = Quiz::class,
-            parentColumns = ["documentId"],
-            childColumns = ["quizId"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
     indices = [
         Index(value = ["quizId"])
     ]

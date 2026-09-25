@@ -72,10 +72,16 @@ class QuizRepository(private val quizDao: QuizDao) {
     }
 
     suspend fun deleteCategory(category: Category) = withContext(Dispatchers.IO) {
+        val quizzes = quizDao.getQuizzesByCategory(category.documentId)
+        quizzes.forEach { quiz ->
+            quizDao.deleteQuestionsForQuiz(quiz.documentId)
+            quizDao.deleteQuiz(quiz)
+        }
         quizDao.deleteCategory(category)
     }
 
     suspend fun deleteQuiz(quiz: Quiz) = withContext(Dispatchers.IO) {
+        quizDao.deleteQuestionsForQuiz(quiz.documentId)
         quizDao.deleteQuiz(quiz)
     }
 
