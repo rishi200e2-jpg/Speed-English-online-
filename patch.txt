@@ -1,0 +1,31 @@
+    fun downloadCloudDataAndSync(silent: Boolean = false) {
+        _isSyncing.value = true
+        if (!silent) _syncStatusMessage.value = "Syncing from cloud database..."
+        viewModelScope.launch {
+            try {
+                // Use Firestore Sync Manager instead of the legacy REST syncService
+                val result = firebaseSyncManager.downloadFromFirestore()
+                
+                if (result.isSuccess) {
+                    val now = System.currentTimeMillis()
+                    sharedPrefs.edit().putLong("last_sync_time", now).apply()
+                    _lastSyncTime.value = now
+                    if (!silent) _syncStatusMessage.value = "Sync completed successfully! Local database updated."
+                    _firestoreQuizError.value = null
+                    _adminQuizError.value = null
+                    updateQuizQuestionsCounts()
+                    // Force refresh lists
+                    loadAdminCategories()
+                    loadUserAttemptsFromFirestore()
+                } else {
+                    val formattedErr = formatFirestoreErrorMessage(result.exceptionOrNull())
+                    if (!silent) _syncStatusMessage.value = "Sync failed: $formattedErr"
+                    _firestoreQuizError.value = formattedErr
+                }
+            } catch (e: Exception) {
+                if (!silent) _syncStatusMessage.value = "Sync error: ${e.message}"
+            } finally {
+                _isSyncing.value = false
+            }
+        }
+    }

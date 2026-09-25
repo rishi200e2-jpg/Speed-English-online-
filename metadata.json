@@ -1,0 +1,8 @@
+{
+  "name": "Speed English online ",
+  "description": "An interactive Android quiz application featuring multiple categories, a live question countdown timer, score screens, and a fully functional secured Admin Panel for creating custom quizzes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

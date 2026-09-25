@@ -1,0 +1,35 @@
+
+    /**
+     * Diagnostic function to verify path structures and schema keys in Firestore for quizzes and questions.
+     * Logs the raw document fields to ensure fetch logic correctly matches the database keys used in the Admin Panel.
+     */
+    suspend fun runFirestoreDiagnostics() {
+        val firestore = db ?: return
+        try {
+            ensureAuthenticated()
+            Log.d("FirestoreDiagnostics", "=== RUNNING FIRESTORE DIAGNOSTICS ===")
+            
+            // Check Quizzes
+            val quizzesSnap = firestore.collection("quizzes").limit(3).get().await()
+            Log.d("FirestoreDiagnostics", "Found ${quizzesSnap.documents.size} quizzes for sample:")
+            for (doc in quizzesSnap.documents) {
+                Log.d("FirestoreDiagnostics", "Quiz Doc ID: ${doc.id}")
+                Log.d("FirestoreDiagnostics", "Quiz Keys: ${doc.data?.keys?.joinToString()}")
+                Log.d("FirestoreDiagnostics", "Quiz 'categoryId' type: ${doc.get("categoryId")?.javaClass?.simpleName}, value: ${doc.get("categoryId")}")
+            }
+
+            // Check Questions
+            val questionsSnap = firestore.collection("questions").limit(3).get().await()
+            Log.d("FirestoreDiagnostics", "Found ${questionsSnap.documents.size} questions for sample:")
+            for (doc in questionsSnap.documents) {
+                Log.d("FirestoreDiagnostics", "Question Doc ID: ${doc.id}")
+                Log.d("FirestoreDiagnostics", "Question Keys: ${doc.data?.keys?.joinToString()}")
+                Log.d("FirestoreDiagnostics", "Question 'quizId' type: ${doc.get("quizId")?.javaClass?.simpleName}, value: ${doc.get("quizId")}")
+            }
+            
+            Log.d("FirestoreDiagnostics", "=== DIAGNOSTICS COMPLETE ===")
+        } catch (e: Exception) {
+            Log.e("FirestoreDiagnostics", "Diagnostics failed: ${e.message}")
+        }
+    }
+}

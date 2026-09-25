@@ -1,0 +1,107 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.email == "sd504212@gmail.com" ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin")
+      );
+    }
+
+    // Categories Collection
+    match /categories/{categoryId} {
+      // Anyone authenticated can read published categories; Admins can read all including drafts
+      allow read: if isAuthenticated() && (resource == null || resource.data.isDraft == false || resource.data.status == "published" || isAdmin());
+      // Only admins can create, update, or delete categories
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Quizzes Collection
+    match /quizzes/{quizId} {
+      // Anyone authenticated can read published quizzes; Admins can read all including drafts
+      allow read: if isAuthenticated() && (resource == null || resource.data.isDraft == false || resource.data.status == "published" || isAdmin());
+      // Only admins can create, update, or delete quizzes
+      allow create, update, delete: if isAdmin();
+
+      // Subcollection questions under quizzes
+      match /questions/{questionId} {
+        allow read: if isAuthenticated();
+        allow create, update, delete: if isAdmin();
+      }
+    }
+
+    // Questions Top-Level Collection
+    match /questions/{questionId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      // Users can read their own profile, admins can read any profile
+      allow read: if isOwner(userId) || isAdmin();
+      
+      // Creating user profile (e.g., upon registration)
+      allow create: if isOwner(userId) 
+        && request.resource.data.role == "user" 
+        && request.resource.data.blocked == false;
+
+      // Updating user profile: Normal users CANNOT elevate role, change status, or unblock themselves
+      allow update: if isAdmin() || (
+        isOwner(userId)
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.status == resource.data.status
+        && request.resource.data.blocked == resource.data.blocked
+      );
+
+      // Deleting user profile: Only admins
+      allow delete: if isAdmin();
+
+      // User's own progress subcollection
+      match /progress/{progressId} {
+        allow read, write, delete: if isOwner(userId) || isAdmin();
+      }
+
+      // User's own attempts subcollection
+      match /attempts/{attemptId} {
+        allow read, write, delete: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    // Live Progress Collection
+    match /liveProgress/{userId} {
+      allow read, write, delete: if isOwner(userId) || isAdmin();
+      match /quizzes/{quizId} {
+        allow read, write, delete: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    // Top-Level Attempts Collection
+    match /attempts/{attemptId} {
+      allow read: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow update, delete: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    // Admin Logs Collection (Strictly restricted to Admin role)
+    match /adminLogs/{logId} {
+      allow read, create, update, delete: if isAdmin();
+    }
+
+    // Question Audit Logs
+    match /question_audit_logs/{logId} {
+      allow read, create, update, delete: if isAdmin();
+    }
+  }
+}

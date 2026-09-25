@@ -1,0 +1,26 @@
+    fun uploadLocalDataToCloud() {
+        _isSyncing.value = true
+        _syncStatusMessage.value = "Authenticating & Uploading data to server..."
+        viewModelScope.launch {
+            try {
+                // Use Firestore Sync Manager instead of the legacy REST syncService
+                val result = firebaseSyncManager.uploadToFirestore { current, total ->
+                    _syncStatusMessage.value = "Publishing to server: $current of $total items..."
+                }
+                
+                if (result.isSuccess) {
+                    val now = System.currentTimeMillis()
+                    sharedPrefs.edit().putLong("last_sync_time", now).apply()
+                    _lastSyncTime.value = now
+                    _syncStatusMessage.value = "Backup published successfully!"
+                } else {
+                    val formattedErr = formatFirestoreErrorMessage(result.exceptionOrNull())
+                    _syncStatusMessage.value = "Upload failed: $formattedErr"
+                }
+            } catch (e: Exception) {
+                _syncStatusMessage.value = "Upload error: ${e.message}"
+            } finally {
+                _isSyncing.value = false
+            }
+        }
+    }
