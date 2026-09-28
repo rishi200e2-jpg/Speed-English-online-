@@ -291,7 +291,7 @@ object GeminiQuestionGenerator {
         val pass1Prompt = """
             Perform Pass 1 of a Two-Pass Question Extraction Plan.
             Scan the entire document text provided below from start to finish.
-            1. Count the exact total number of multiple-choice questions present in the document ("totalQuestions").
+            1. Count the exact total number of multiple-choice questions present in the document ("totalQuestions") up to a maximum of 120 questions.
             2. Index every question with its 1-based index number and a brief 5-10 word snippet ("questionIndex").
 
             DOCUMENT CONTENT:
@@ -339,7 +339,7 @@ object GeminiQuestionGenerator {
         }
 
         if (blueprint.totalQuestions <= 0) {
-            blueprint = DocumentBlueprint(totalQuestions = 25)
+            blueprint = DocumentBlueprint(totalQuestions = 120)
         }
 
         android.util.Log.d("GeminiQuestionGenerator", "Pass 1 Blueprint complete. Total questions counted: ${blueprint.totalQuestions}")
@@ -348,15 +348,16 @@ object GeminiQuestionGenerator {
         // ---------------------------------------------------------------------
         // PASS 2: Strict Extraction
         // ---------------------------------------------------------------------
-        val totalQuestions = if (blueprint.questionIndex.isNotEmpty()) {
+        val rawTotalQuestions = if (blueprint.questionIndex.isNotEmpty()) {
             blueprint.questionIndex.size
         } else {
             blueprint.totalQuestions
         }
+        val totalQuestions = minOf(rawTotalQuestions, 120)
         
-        // Extract in extremely safe and reliable batches of 5 questions.
-        // This prevents response truncation/token limit cuts from the Gemini API.
-        val batchSize = 5
+        // Extract in safe and reliable batches of 10 questions.
+        // This allows up to 120 questions per quiz scan cleanly and quickly.
+        val batchSize = 10
         val numBatches = (totalQuestions + batchSize - 1) / batchSize
 
         val pass2Schema = GeminiSchema(

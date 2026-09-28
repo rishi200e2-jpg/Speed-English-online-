@@ -402,8 +402,16 @@ class SyncManager(
                                 val title = doc.getString("title") ?: ""
                                 val description = doc.getString("description") ?: ""
                                 val timeLimitSeconds = (doc.getLong("timeLimitSeconds") ?: 60L).toInt()
+                                val questionCount = doc.getLong("questionCount")?.toInt() ?: 0
                                 val documentId = doc.id
-                                Quiz(documentId = documentId, categoryId = categoryId, title = title, description = description, timeLimitSeconds = timeLimitSeconds)
+                                Quiz(
+                                    documentId = documentId,
+                                    categoryId = categoryId,
+                                    title = title,
+                                    description = description,
+                                    timeLimitSeconds = timeLimitSeconds,
+                                    questionCount = questionCount
+                                )
                             } catch (e: Exception) { null }
                         }
                         if (remoteQuizzes.isNotEmpty()) {

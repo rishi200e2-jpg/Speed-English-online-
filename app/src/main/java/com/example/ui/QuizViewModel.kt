@@ -3421,6 +3421,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                 val batch = firestore.batch()
                 val baseTime = System.currentTimeMillis()
+                val quizTitle = quiz.title
                 
                 uniqueParsedQuestions.forEachIndexed { idx, q ->
                     val docId = if (q.documentId.isNotEmpty()) q.documentId else UUID.randomUUID().toString()
@@ -3437,6 +3438,34 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                     val subcollRef = firestore.collection("quizzes").document(quizId).collection("questions").document(docId)
                     batch.set(topLevelRef, qWithDocId)
                     batch.set(subcollRef, qWithDocId)
+
+                    // Record audit log for each AI generated / uploaded question
+                    recordQuestionAuditLog(
+                        actionType = "ADDED",
+                        questionId = docId,
+                        questionText = qWithDocId.text,
+                        quizId = quizId,
+                        quizTitle = quizTitle,
+                        status = "PROPAGATED_TO_CLOUDFIRESTORE",
+                        details = "AI generated/imported from document ($fileName). Correct Option: ${qWithDocId.correctOption}",
+                        documentId = docId
+                    )
+                }
+
+                logAdminAction(
+                    action = "GENERATE_QUESTIONS_AI",
+                    targetType = "QUIZ",
+                    targetId = quizId,
+                    details = "AI generated/imported ${uniqueParsedQuestions.size} questions from document '$fileName' for quiz '$quizTitle'"
+                )
+
+                if (!quiz.isDraft) {
+                    val updatedQuiz = quiz.copy(
+                        version = quiz.version + 1,
+                        updatedAt = baseTime
+                    )
+                    repository.updateQuiz(updatedQuiz)
+                    batch.set(firestore.collection("quizzes").document(quizId), updatedQuiz)
                 }
 
                 try {

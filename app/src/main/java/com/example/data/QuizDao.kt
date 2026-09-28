@@ -36,6 +36,9 @@ interface QuizDao {
     suspend fun getQuizzesByCategory(categoryId: String): List<Quiz>
 
     @Query("SELECT * FROM quizzes ORDER BY documentId ASC")
+    fun getAllQuizzesFlow(): Flow<List<Quiz>>
+
+    @Query("SELECT * FROM quizzes ORDER BY documentId ASC")
     suspend fun getAllQuizzes(): List<Quiz>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -133,6 +136,18 @@ interface QuizDao {
 
     @Query("SELECT * FROM quiz_attempts ORDER BY dateMillis DESC")
     suspend fun getAllAttempts(): List<QuizAttempt>
+
+    @Transaction
+    suspend fun syncCategoriesFromFirestore(remoteCategories: List<Category>) {
+        deleteAllCategories()
+        insertCategories(remoteCategories)
+    }
+
+    @Transaction
+    suspend fun syncQuizzesFromFirestore(remoteQuizzes: List<Quiz>) {
+        deleteAllQuizzes()
+        insertQuizzes(remoteQuizzes)
+    }
 
     @Transaction
     suspend fun clearAndRestoreData(

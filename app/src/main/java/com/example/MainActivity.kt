@@ -19,22 +19,32 @@ class MainActivity : ComponentActivity() {
     enableEdgeToEdge()
 
     // Retrieve the shared QuizViewModel at the Activity level
-    val quizViewModel = ViewModelProvider(this)[QuizViewModel::class.java]
+    val quizViewModel = try {
+      ViewModelProvider(this)[QuizViewModel::class.java]
+    } catch (e: Exception) {
+      android.util.Log.e("MainActivity", "Failed initializing QuizViewModel: ${e.message}", e)
+      ViewModelProvider(this)[QuizViewModel::class.java]
+    }
 
     // Implement a custom OnBackPressedCallback to handle physical/gesture back navigation smoothly
     val onBackPressedCallback = object : androidx.activity.OnBackPressedCallback(true) {
       override fun handleOnBackPressed() {
-        if (quizViewModel.isCurrentUserBlocked.value) {
-          // If account is suspended, do not navigate back to content screens
+        try {
+          if (quizViewModel.isCurrentUserBlocked.value) {
+            // If account is suspended, do not navigate back to content screens
+            finish()
+            return
+          }
+          val handled = quizViewModel.navigateBack()
+          if (!handled) {
+            // If we are already on Home/Splash, disable this callback and run the default exit behavior
+            isEnabled = false
+            onBackPressedDispatcher.onBackPressed()
+            isEnabled = true
+          }
+        } catch (e: Exception) {
+          android.util.Log.e("MainActivity", "Error in onBackPressed: ${e.message}", e)
           finish()
-          return
-        }
-        val handled = quizViewModel.navigateBack()
-        if (!handled) {
-          // If we are already on Home/Splash, disable this callback and run the default exit behavior
-          isEnabled = false
-          onBackPressedDispatcher.onBackPressed()
-          isEnabled = true
         }
       }
     }

@@ -2,10 +2,133 @@ package com.example.data
 
 import android.content.Context
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.google.firebase.firestore.FirebaseFirestore
 
 class QuizRepository(private val quizDao: QuizDao) {
+
+    fun streamCategoriesRealtime(): Flow<LceState<List<Category>>> = callbackFlow {
+        trySend(LceState.Loading)
+        val firestore = FirebaseFirestore.getInstance()
+        val listener = firestore.collection("categories")
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    trySend(LceState.Error(error.message ?: "Error streaming categories", error))
+                    return@addSnapshotListener
+                }
+                if (snapshot != null) {
+                    val categories = snapshot.documents.mapNotNull { doc ->
+                        try {
+                            val isDraftVal = doc.getBoolean("isDraft") ?: false
+                            val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
+                            Category(
+                                documentId = doc.id,
+                                name = doc.getString("name") ?: "",
+                                description = doc.getString("description") ?: "",
+                                iconName = doc.getString("iconName") ?: "general",
+                                isDraft = isDraftVal,
+                                status = statusVal,
+                                parentCategoryId = doc.getString("parentCategoryId"),
+                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                                updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
+                            )
+                        } catch (e: Exception) { null }
+                    }
+                    CoroutineScope(Dispatchers.IO).launch {
+                        if (categories.isNotEmpty()) quizDao.syncCategoriesFromFirestore(categories)
+                    }
+                    trySend(LceState.Content(categories))
+                }
+            }
+        awaitClose { listener.remove() }
+    }
+
+    fun streamQuizzesRealtime(categoryId: String? = null): Flow<LceState<List<Quiz>>> = callbackFlow {
+        trySend(LceState.Loading)
+        val firestore = FirebaseFirestore.getInstance()
+        val query = if (categoryId != null) {
+            firestore.collection("quizzes").whereEqualTo("categoryId", categoryId)
+        } else {
+            firestore.collection("quizzes")
+        }
+        val listener = query.addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                trySend(LceState.Error(error.message ?: "Error streaming quizzes", error))
+                return@addSnapshotListener
+            }
+            if (snapshot != null) {
+                val quizzes = snapshot.documents.mapNotNull { doc ->
+                    try {
+                        val isDraftVal = doc.getBoolean("isDraft") ?: false
+                        val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
+                        Quiz(
+                            documentId = doc.id,
+                            categoryId = doc.getString("categoryId") ?: "",
+                            title = doc.getString("title") ?: "",
+                            description = doc.getString("description") ?: "",
+                            timeLimitSeconds = doc.getLong("timeLimitSeconds")?.toInt() ?: 20,
+                            isDraft = isDraftVal,
+                            status = statusVal,
+                            version = doc.getLong("version")?.toInt() ?: 1,
+                            shuffleQuestions = doc.getBoolean("shuffleQuestions") ?: false,
+                            marksPerQuestion = doc.getDouble("marksPerQuestion")?.toFloat() ?: 1.0f,
+                            negativeMarking = doc.getDouble("negativeMarking")?.toFloat() ?: 0.0f,
+                            questionCount = doc.getLong("questionCount")?.toInt() ?: 0,
+                            createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                            updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis(),
+                            publishedAt = doc.getLong("publishedAt")
+                        )
+                    } catch (e: Exception) { null }
+                }
+                CoroutineScope(Dispatchers.IO).launch {
+                    if (quizzes.isNotEmpty()) quizDao.syncQuizzesFromFirestore(quizzes)
+                }
+                trySend(LceState.Content(quizzes))
+            }
+        }
+        awaitClose { listener.remove() }
+    }
+
+    fun streamQuestionsRealtime(quizId: String): Flow<LceState<List<Question>>> = callbackFlow {
+        trySend(LceState.Loading)
+        val firestore = FirebaseFirestore.getInstance()
+        val listener = firestore.collection("questions")
+            .whereEqualTo("quizId", quizId)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    trySend(LceState.Error(error.message ?: "Error streaming questions", error))
+                    return@addSnapshotListener
+                }
+                if (snapshot != null) {
+                    val questions = snapshot.documents.mapNotNull { doc ->
+                        try {
+                            Question(
+                                documentId = doc.id,
+                                quizId = doc.getString("quizId") ?: "",
+                                text = doc.getString("text") ?: "",
+                                optionA = doc.getString("optionA") ?: "",
+                                optionB = doc.getString("optionB") ?: "",
+                                optionC = doc.getString("optionC") ?: "",
+                                optionD = doc.getString("optionD") ?: "",
+                                correctOption = doc.getString("correctOption") ?: doc.getString("correctAnswer") ?: "A",
+                                explanation = doc.getString("explanation") ?: "",
+                                version = doc.getLong("version")?.toInt() ?: 1
+                            )
+                        } catch (e: Exception) { null }
+                    }
+                    CoroutineScope(Dispatchers.IO).launch {
+                        if (questions.isNotEmpty()) quizDao.insertQuestions(questions)
+                    }
+                    trySend(LceState.Content(questions))
+                }
+            }
+        awaitClose { listener.remove() }
+    }
 
     val allCategoriesFlow: Flow<List<Category>> = quizDao.getAllCategoriesFlow()
 
@@ -104,6 +227,8 @@ class QuizRepository(private val quizDao: QuizDao) {
     suspend fun getAllCategories(): List<Category> = withContext(Dispatchers.IO) {
         quizDao.getAllCategories()
     }
+
+    fun getAllQuizzesFlow(): Flow<List<Quiz>> = quizDao.getAllQuizzesFlow()
 
     suspend fun getAllQuizzes(): List<Quiz> = withContext(Dispatchers.IO) {
         quizDao.getAllQuizzes()

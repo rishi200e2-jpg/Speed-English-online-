@@ -28,25 +28,38 @@ service cloud.firestore {
       );
     }
 
+    function isNotBlocked() {
+      return !isAuthenticated() || (
+        isAdmin() ||
+        !(
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+           (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.blocked == true ||
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == "blocked"))
+          ||
+          (request.auth.token != null && 'email' in request.auth.token && 
+           exists(/databases/$(database)/documents/users/$(request.auth.token.email.replace(".", "_"))) && 
+           (get(/databases/$(database)/documents/users/$(request.auth.token.email.replace(".", "_"))).data.blocked == true ||
+            get(/databases/$(database)/documents/users/$(request.auth.token.email.replace(".", "_"))).data.status == "blocked"))
+        )
+      );
+    }
+
     // ==========================================
     // 1. Categories Collection (Global Content)
     // ==========================================
     match /categories/{categoryId} {
-      allow read: if true;
-      allow create, update, delete: if isAdmin();
+      allow read, create, update, delete: if isNotBlocked();
     }
 
     // ==========================================
     // 2. Quizzes Collection & Subcollections (Global Content)
     // ==========================================
     match /quizzes/{quizId} {
-      allow read: if true;
-      allow create, update, delete: if isAdmin();
+      allow read, create, update, delete: if isNotBlocked();
 
       // Subcollection: Questions under Quiz
       match /questions/{questionId} {
-        allow read: if true;
-        allow create, update, delete: if isAdmin();
+        allow read, create, update, delete: if isNotBlocked();
       }
     }
 
@@ -54,16 +67,15 @@ service cloud.firestore {
     // 3. Questions Top-Level Collection (Global Content)
     // ==========================================
     match /questions/{questionId} {
-      allow read: if true;
-      allow create, update, delete: if isAdmin();
+      allow read, create, update, delete: if isNotBlocked();
     }
 
     // ==========================================
     // 4. Users Collection & User-Specific Data
     // ==========================================
     match /users/{userId} {
-      allow read: if isOwner(userId) || isAdmin();
-      allow create: if isOwner(userId);
+      allow read: if isOwner(userId) || isAdmin() || isNotBlocked();
+      allow create: if isOwner(userId) || isAuthenticated();
       allow update: if isAdmin() || (
         isOwner(userId)
         && request.resource.data.role == resource.data.role
@@ -74,12 +86,12 @@ service cloud.firestore {
 
       // User's own progress subcollection
       match /progress/{progressId} {
-        allow read, write, delete: if isOwner(userId) || isAdmin();
+        allow read, write, delete: if isOwner(userId) || isAdmin() || isNotBlocked();
       }
 
       // User's own attempts subcollection
       match /attempts/{attemptId} {
-        allow read, write, delete: if isOwner(userId) || isAdmin();
+        allow read, write, delete: if isOwner(userId) || isAdmin() || isNotBlocked();
       }
     }
 
@@ -87,9 +99,9 @@ service cloud.firestore {
     // 5. Live Progress Collection
     // ==========================================
     match /liveProgress/{userId} {
-      allow read, write, delete: if isOwner(userId) || isAdmin();
+      allow read, write, delete: if isOwner(userId) || isAdmin() || isNotBlocked();
       match /quizzes/{quizId} {
-        allow read, write, delete: if isOwner(userId) || isAdmin();
+        allow read, write, delete: if isOwner(userId) || isAdmin() || isNotBlocked();
       }
     }
 
@@ -97,7 +109,7 @@ service cloud.firestore {
     // 6. Top-Level Attempts Collection (Historical Attempt Records)
     // ==========================================
     match /attempts/{attemptId} {
-      allow read, write: if isAuthenticated() || isAdmin();
+      allow read, write: if isNotBlocked();
     }
 
     // ==========================================

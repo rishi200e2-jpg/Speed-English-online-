@@ -744,7 +744,12 @@ fun MainQuizApp(
                             ScoreScreen(viewModel = viewModel, quiz = screen.quiz, score = screen.score, totalQuestions = screen.totalQuestions)
                         }
                         is Screen.AdminDashboard -> {
-                            AdminDashboardScreen(viewModel = viewModel)
+                            val isBlocked by viewModel.isCurrentUserBlocked.collectAsState()
+                            if (currentUserRole?.equals("admin", ignoreCase = true) == true && !isBlocked) {
+                                AdminDashboardScreen(viewModel = viewModel)
+                            } else {
+                                HomeScreen(viewModel = viewModel)
+                            }
                         }
                     }
                 }
@@ -1174,7 +1179,9 @@ fun SplashScreen(viewModel: QuizViewModel) {
 @Composable
 fun HomeScreen(viewModel: QuizViewModel) {
     val currentUserRole by viewModel.currentUserRole.collectAsState()
-    val isAdminUser = currentUserRole?.equals("admin", ignoreCase = true) == true
+    val isBlocked by viewModel.isCurrentUserBlocked.collectAsState()
+    val isAdminUser = (currentUserRole?.equals("admin", ignoreCase = true) == true) && !isBlocked
+    val canManageContent = isAdminUser
     var activeTabState by varRemember { mutableStateOf(0) } // 0: Practice, 1: Progress, 2: Profile, 3: Admin
 
     Scaffold(
@@ -1189,7 +1196,7 @@ fun HomeScreen(viewModel: QuizViewModel) {
             ) {
                 Surface(
                     modifier = Modifier
-                        .fillMaxWidth(if (isAdminUser) 0.92f else 0.85f)
+                        .fillMaxWidth(if (canManageContent) 0.92f else 0.85f)
                         .widthIn(max = 460.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.98f),
                     shape = RoundedCornerShape(22.dp),
@@ -1244,12 +1251,12 @@ fun HomeScreen(viewModel: QuizViewModel) {
                                 indicatorColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
                             )
                         )
-                        if (isAdminUser) {
+                        if (canManageContent) {
                             NavigationBarItem(
                                 selected = activeTabState == 3,
                                 onClick = { activeTabState = 3 },
-                                icon = { Icon(Icons.Default.Settings, contentDescription = "Admin", modifier = Modifier.size(18.dp)) },
-                                label = { Text("Admin", fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold) },
+                                icon = { Icon(Icons.Default.Settings, contentDescription = "Manage", modifier = Modifier.size(18.dp)) },
+                                label = { Text("Manage", fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold) },
                                 alwaysShowLabel = true,
                                 colors = NavigationBarItemDefaults.colors(
                                     selectedIconColor = MaterialTheme.colorScheme.primary,
@@ -1278,10 +1285,10 @@ fun HomeScreen(viewModel: QuizViewModel) {
                     .widthIn(max = 850.dp)
             ) {
                 when (activeTabState) {
-                    0 -> PracticeTabContent(viewModel = viewModel, onNavigateToAdmin = { if (isAdminUser) activeTabState = 3 })
+                    0 -> PracticeTabContent(viewModel = viewModel, onNavigateToAdmin = { if (canManageContent) activeTabState = 3 })
                     1 -> ProgressTabContent(viewModel = viewModel)
                     2 -> ProfileTabContent(viewModel = viewModel)
-                    3 -> if (isAdminUser) AdminTabContent(viewModel = viewModel) else PracticeTabContent(viewModel = viewModel, onNavigateToAdmin = { })
+                    3 -> if (canManageContent) AdminTabContent(viewModel = viewModel) else PracticeTabContent(viewModel = viewModel, onNavigateToAdmin = { })
                 }
             }
         }
@@ -1370,7 +1377,8 @@ fun PracticeTabContent(viewModel: QuizViewModel, onNavigateToAdmin: () -> Unit) 
             }
 
             val currentUserRole by viewModel.currentUserRole.collectAsState()
-            val isAdminUser = currentUserRole?.equals("admin", ignoreCase = true) == true
+            val isBlocked by viewModel.isCurrentUserBlocked.collectAsState()
+            val canManageContent = !isBlocked
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(
@@ -1392,7 +1400,7 @@ fun PracticeTabContent(viewModel: QuizViewModel, onNavigateToAdmin: () -> Unit) 
                     )
                 }
 
-                if (isAdminUser) {
+                if (canManageContent) {
                     Spacer(modifier = Modifier.width(8.dp))
                     IconButton(
                         onClick = onNavigateToAdmin,
@@ -1404,7 +1412,7 @@ fun PracticeTabContent(viewModel: QuizViewModel, onNavigateToAdmin: () -> Unit) 
                     ) {
                         Icon(
                             imageVector = Icons.Default.Settings,
-                            contentDescription = "Admin Settings Shortcut",
+                            contentDescription = "Content Management Shortcut",
                             tint = if (isDarkTheme) Color(0xFF818CF8) else Color(0xFF4F46E5),
                             modifier = Modifier.size(20.dp)
                         )
@@ -5549,7 +5557,8 @@ fun generateQuizPdfReport(
 @Composable
 fun AdminDashboardScreen(viewModel: QuizViewModel, initiallyVerified: Boolean = true) {
     val currentUserRole by viewModel.currentUserRole.collectAsState()
-    val isAdmin = currentUserRole?.equals("admin", ignoreCase = true) == true
+    val isBlocked by viewModel.isCurrentUserBlocked.collectAsState()
+    val isAdmin = !isBlocked && (currentUserRole?.equals("admin", ignoreCase = true) == true)
 
     if (!isAdmin) {
         Box(
@@ -5584,7 +5593,7 @@ fun AdminDashboardScreen(viewModel: QuizViewModel, initiallyVerified: Boolean = 
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "The Admin Panel is strictly reserved for administrative accounts. Your current account does not have admin permissions.",
+                        text = if (isBlocked) "Your account has been blocked by an administrator." else "The Admin Panel is strictly reserved for administrative accounts.",
                         style = MaterialTheme.typography.bodyMedium,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f)

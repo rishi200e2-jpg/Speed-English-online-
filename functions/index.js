@@ -10,8 +10,14 @@
  */
 
 const { onRequest } = require("firebase-functions/v2/https");
+const functions = require("firebase-functions");
 const logger = require("firebase-functions/logger");
 const axios = require("axios");
+const admin = require("firebase-admin");
+
+if (!admin.apps.length) {
+  admin.initializeApp();
+}
 
 // Define the official Gemini endpoint
 const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent";
@@ -89,3 +95,23 @@ exports.geminiProxy = onRequest({
     }
   }
 });
+
+/**
+ * Firebase Cloud Function to update question count on Quiz document
+ * automatically whenever questions are added, modified, or deleted.
+ */
+exports.updateQuestionCount = functions.firestore
+  .document('quizzes/{quizId}/questions/{questionId}')
+  .onWrite(async (change, context) => {
+    const quizId = context.params.quizId;
+    const quizRef = admin.firestore().collection('quizzes').doc(quizId);
+    
+    try {
+      const questionsSnapshot = await quizRef.collection('questions').get();
+      await quizRef.update({ questionCount: questionsSnapshot.size });
+      logger.info(`Successfully updated questionCount for quiz ${quizId} to ${questionsSnapshot.size}`);
+    } catch (err) {
+      logger.error(`Error updating questionCount for quiz ${quizId}:`, err);
+    }
+  });
+

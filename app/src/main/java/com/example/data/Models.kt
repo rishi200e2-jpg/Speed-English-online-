@@ -4,6 +4,12 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 import androidx.room.Index
 
+sealed interface LceState<out T> {
+    object Loading : LceState<Nothing>
+    data class Content<T>(val data: T) : LceState<T>
+    data class Error(val message: String, val throwable: Throwable? = null) : LceState<Nothing>
+}
+
 @Entity(tableName = "categories")
 data class Category(
     @PrimaryKey val documentId: String,
@@ -35,6 +41,7 @@ data class Quiz(
     val shuffleQuestions: Boolean = false,
     val marksPerQuestion: Float = 1.0f,
     val negativeMarking: Float = 0.0f,
+    val questionCount: Int = 0,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
     val publishedAt: Long? = null
