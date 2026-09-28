@@ -3408,7 +3408,6 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 val availableSlots = 120 - existingQuestions.size
 
                 val uniqueParsedQuestions = parsedQuestionsList
-                    .distinctBy { it.text.trim().lowercase() }
                     .take(availableSlots)
 
                 if (uniqueParsedQuestions.isEmpty()) {
