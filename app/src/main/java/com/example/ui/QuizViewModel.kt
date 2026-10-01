@@ -679,6 +679,30 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun refreshAllAppData(onComplete: () -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                refreshNetworkStatus()
+                updateQuizQuestionsCounts()
+                downloadCloudDataAndSync(false)
+                loadUserAttemptsFromFirestore()
+                val email = _currentUserEmail.value
+                if (!email.isNullOrEmpty()) {
+                    loadCurrentUserName(email)
+                }
+                startObservingContactMethodsAndPrivacyPolicy()
+                if (currentUserRole.value?.equals("admin", ignoreCase = true) == true) {
+                    loadAdminCategories()
+                    loadAllRegisteredUsers()
+                }
+            } catch (e: Exception) {
+                Log.e("QuizViewModel", "Error in refreshAllAppData: ${e.message}", e)
+            } finally {
+                withContext(Dispatchers.Main) { onComplete() }
+            }
+        }
+    }
+
     fun retryAdminQuizFetch(categoryId: String = "") {
         _adminQuizError.value = null
         _firestoreQuizError.value = null

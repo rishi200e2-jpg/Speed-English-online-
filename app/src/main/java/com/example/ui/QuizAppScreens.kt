@@ -1334,7 +1334,7 @@ fun PracticeTabContent(viewModel: QuizViewModel, onNavigateToAdmin: () -> Unit) 
 
         PullToRefreshLayout(
             isRefreshing = isSyncing,
-            onRefresh = { viewModel.fetchFromFirestoreCloud() },
+            onRefresh = { viewModel.refreshAllAppData() },
             modifier = Modifier.fillMaxSize()
         ) {
             Column(
@@ -2606,8 +2606,7 @@ fun ProgressTabContent(viewModel: QuizViewModel) {
     PullToRefreshLayout(
         isRefreshing = isSyncing,
         onRefresh = {
-            viewModel.fetchFromFirestoreCloud()
-            viewModel.loadUserAttemptsFromFirestore()
+            viewModel.refreshAllAppData()
         },
         modifier = Modifier.fillMaxSize()
     ) {
@@ -2883,8 +2882,7 @@ fun ProfileTabContent(viewModel: QuizViewModel) {
     PullToRefreshLayout(
         isRefreshing = isSyncing,
         onRefresh = {
-            viewModel.fetchFromFirestoreCloud()
-            viewModel.loadUserAttemptsFromFirestore()
+            viewModel.refreshAllAppData()
         },
         modifier = Modifier.fillMaxSize()
     ) {
@@ -3768,7 +3766,11 @@ fun CategoryViewScreen(viewModel: QuizViewModel, category: Category) {
 
         PullToRefreshLayout(
             isRefreshing = isSyncing,
-            onRefresh = { viewModel.fetchFromFirestoreCloud() },
+            onRefresh = {
+                viewModel.fetchFromFirestoreCloud()
+                viewModel.updateQuizQuestionsCounts()
+                viewModel.fetchNewestQuestionsDirectlyFromServer(categoryId = category.documentId)
+            },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
@@ -4807,15 +4809,22 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
             }
         }
     ) { innerPadding ->
-        Column(
+        val isSyncing by viewModel.isSyncing.collectAsState()
+        PullToRefreshLayout(
+            isRefreshing = isSyncing,
+            onRefresh = { viewModel.loadUserAttemptsFromFirestore() },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .background(MaterialTheme.colorScheme.background)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
             // Magnificent Hero Card with confetti backdrop
             Box(
                 modifier = Modifier
@@ -5433,6 +5442,7 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                     }
                 }
             }
+        }
         }
     }
 }
@@ -6167,14 +6177,16 @@ fun AdminDashboardScreen(viewModel: QuizViewModel, initiallyVerified: Boolean = 
         val currentUserRole by viewModel.currentUserRole.collectAsState()
         val isAuthLoading by viewModel.isAuthLoading.collectAsState()
         val authMessage by viewModel.authMessage.collectAsState()
+        val isSyncing by viewModel.isSyncing.collectAsState()
 
         var isSignInMode by varRemember { mutableStateOf(true) }
         var emailInput by varRemember { mutableStateOf("") }
         var passwordInput by varRemember { mutableStateOf("") }
         var selectedRoleInput by varRemember { mutableStateOf("Admin") } // Default to Admin inside Admin workspace
 
-        // Direct Admin Workspace (Fully Offline Local Content Management)
-        Column(
+        PullToRefreshLayout(
+            isRefreshing = isSyncing,
+            onRefresh = { viewModel.refreshAllAppData() },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(
@@ -6183,11 +6195,16 @@ fun AdminDashboardScreen(viewModel: QuizViewModel, initiallyVerified: Boolean = 
                     top = innerPadding.calculateTopPadding(),
                     bottom = 0.dp
                 )
-                .background(MaterialTheme.colorScheme.background)
-                .verticalScroll(rememberScrollState())
-                .padding(start = 8.dp, end = 8.dp, top = 0.dp, bottom = 2.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Direct Admin Workspace (Fully Offline Local Content Management)
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background)
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 8.dp, end = 8.dp, top = 0.dp, bottom = 2.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
                 // Admin Info Top Bar (Compact Status Badge Style)
                 Card(
                     modifier = Modifier
@@ -8199,6 +8216,7 @@ fun AdminDashboardScreen(viewModel: QuizViewModel, initiallyVerified: Boolean = 
                     }
                 }
             )
+        }
         }
     }
 
