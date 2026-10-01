@@ -42,6 +42,7 @@ data class Quiz(
     val marksPerQuestion: Float = 1.0f,
     val negativeMarking: Float = 0.0f,
     val questionCount: Int = 0,
+    val sortOrder: Int = 0,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
     val publishedAt: Long? = null
@@ -134,4 +135,31 @@ data class RegisteredUser(
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L,
     val lastLoginAt: Long = 0L
+)
+
+@Entity(tableName = "contact_methods")
+data class ContactMethod(
+    @PrimaryKey val documentId: String = "",
+    val platform: String = "Website",
+    val title: String = "",
+    val description: String = "",
+    val value: String = "",
+    val displayOrder: Int = 0,
+    val isEnabled: Boolean = true,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+data class PrivacyPolicyData(
+    val title: String = "Privacy Policy",
+    val content: String = "Welcome to Speed English! Your privacy is very important to us.\n\n" +
+            "1. Information We Collect:\n" +
+            "We collect basic account information (such as your email address and display name) and quiz performance statistics to calculate your XP and accuracy scores.\n\n" +
+            "2. How We Use Your Data:\n" +
+            "Your learning data is used exclusively to display personal progress charts, sync quiz history, and provide personalized drill recommendations.\n\n" +
+            "3. Data Protection & Sharing:\n" +
+            "We do not sell or trade your personal information to any third parties. All cloud communication is secured via Firebase Cloud Firestore encrypted connections.\n\n" +
+            "4. Contact Us:\n" +
+            "If you have questions regarding this Privacy Policy, please reach out via our official Contact Us channels.",
+    val updatedAt: Long = System.currentTimeMillis()
 )

@@ -403,6 +403,7 @@ class SyncManager(
                                 val description = doc.getString("description") ?: ""
                                 val timeLimitSeconds = (doc.getLong("timeLimitSeconds") ?: 60L).toInt()
                                 val questionCount = doc.getLong("questionCount")?.toInt() ?: 0
+                                val sortOrder = doc.getLong("sortOrder")?.toInt() ?: 0
                                 val documentId = doc.id
                                 Quiz(
                                     documentId = documentId,
@@ -410,7 +411,8 @@ class SyncManager(
                                     title = title,
                                     description = description,
                                     timeLimitSeconds = timeLimitSeconds,
-                                    questionCount = questionCount
+                                    questionCount = questionCount,
+                                    sortOrder = sortOrder
                                 )
                             } catch (e: Exception) { null }
                         }

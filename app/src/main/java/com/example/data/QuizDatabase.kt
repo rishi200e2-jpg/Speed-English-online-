@@ -5,7 +5,7 @@ import androidx.room.*
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [Category::class, Quiz::class, Question::class, QuizAttempt::class, QuestionAuditLog::class], version = 20, exportSchema = false)
+@Database(entities = [Category::class, Quiz::class, Question::class, QuizAttempt::class, QuestionAuditLog::class], version = 21, exportSchema = false)
 abstract class QuizDatabase : RoomDatabase() {
 
     abstract fun quizDao(): QuizDao
@@ -32,6 +32,12 @@ abstract class QuizDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE quizzes ADD COLUMN sortOrder INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getDatabase(context: Context): QuizDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -39,7 +45,7 @@ abstract class QuizDatabase : RoomDatabase() {
                     QuizDatabase::class.java,
                     "quiz_database"
                 )
-                .addMigrations(MIGRATION_18_19, MIGRATION_19_20, MIGRATION_18_20)
+                .addMigrations(MIGRATION_18_19, MIGRATION_19_20, MIGRATION_18_20, MIGRATION_20_21)
                 .fallbackToDestructiveMigration(true)
                 .fallbackToDestructiveMigrationOnDowngrade(true)
                 .build()

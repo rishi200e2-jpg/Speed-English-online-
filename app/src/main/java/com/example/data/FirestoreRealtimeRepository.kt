@@ -90,6 +90,7 @@ class FirestoreRealtimeRepository(
                             shuffleQuestions = doc.getBoolean("shuffleQuestions") ?: false,
                             marksPerQuestion = doc.getDouble("marksPerQuestion")?.toFloat() ?: 1.0f,
                             negativeMarking = doc.getDouble("negativeMarking")?.toFloat() ?: 0.0f,
+                            sortOrder = doc.getLong("sortOrder")?.toInt() ?: 0,
                             createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
                             updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis(),
                             publishedAt = doc.getLong("publishedAt")
@@ -99,7 +100,8 @@ class FirestoreRealtimeRepository(
                         null
                     }
                 }
-                trySend(quizzes)
+                val sortedQuizzes = quizzes.sortedWith(compareBy<Quiz> { it.sortOrder }.thenBy { it.createdAt })
+                trySend(sortedQuizzes)
             }
         }
 

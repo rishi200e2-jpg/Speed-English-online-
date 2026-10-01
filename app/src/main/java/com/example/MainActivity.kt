@@ -35,12 +35,24 @@ class MainActivity : ComponentActivity() {
             finish()
             return
           }
-          val handled = quizViewModel.navigateBack()
-          if (!handled) {
-            // If we are already on Home/Splash, disable this callback and run the default exit behavior
+
+          val currentScreen = quizViewModel.currentScreen.value
+          if (currentScreen is com.example.ui.Screen.Home || currentScreen is com.example.ui.Screen.Splash) {
+            // Root screens: disable callback and execute system exit / minimize behavior directly
             isEnabled = false
             onBackPressedDispatcher.onBackPressed()
             isEnabled = true
+            return
+          }
+
+          // Trigger back ad with robust fallback before navigation
+          com.example.ads.RewardedInterstitialAdManager.showBackNavigationAd(this@MainActivity) {
+            val handled = quizViewModel.navigateBack()
+            if (!handled) {
+              isEnabled = false
+              onBackPressedDispatcher.onBackPressed()
+              isEnabled = true
+            }
           }
         } catch (e: Exception) {
           android.util.Log.e("MainActivity", "Error in onBackPressed: ${e.message}", e)
@@ -50,6 +62,9 @@ class MainActivity : ComponentActivity() {
     }
     onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
 
+    // Preload Rewarded and Interstitial ads in advance
+    com.example.ads.RewardedInterstitialAdManager.preloadAll(this)
+
     setContent {
       val isDarkTheme by quizViewModel.isDarkTheme.collectAsState()
       MyApplicationTheme(darkTheme = isDarkTheme) {
@@ -58,6 +73,16 @@ class MainActivity : ComponentActivity() {
           modifier = Modifier.fillMaxSize()
         )
       }
+    }
+  }
+
+  override fun onDestroy() {
+    super.onDestroy()
+    try {
+      com.example.ads.NativeAdManager.destroyAll()
+      com.example.ads.RewardedInterstitialAdManager.destroyAll()
+    } catch (e: Exception) {
+      android.util.Log.e("MainActivity", "Error destroying ads in onDestroy: ${e.message}", e)
     }
   }
 }

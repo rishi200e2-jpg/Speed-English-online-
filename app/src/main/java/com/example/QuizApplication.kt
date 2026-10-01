@@ -27,6 +27,13 @@ class QuizApplication : Application() {
         } catch (e: Exception) {
             Log.e("QuizApplication", "Firebase auto-initialization failed: ${e.message}", e)
         }
+
+        // 3. Initialize Google Mobile Ads SDK once at application startup
+        try {
+            com.example.ads.AdMobConfig.initialize(this)
+        } catch (e: Exception) {
+            Log.e("QuizApplication", "AdMob auto-initialization failed: ${e.message}", e)
+        }
     }
 
     private fun isFatalLaunchException(throwable: Throwable): Boolean {

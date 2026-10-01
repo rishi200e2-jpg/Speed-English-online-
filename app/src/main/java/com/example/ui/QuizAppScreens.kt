@@ -1,6 +1,8 @@
 package com.example.ui
 
 import com.example.R
+import com.example.ads.RewardedInterstitialAdManager
+import com.example.ads.findActivity
 import androidx.compose.ui.res.painterResource
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -669,24 +671,28 @@ fun MainQuizApp(
     val currentScreen by viewModel.currentScreen.collectAsState()
     val currentUserRole by viewModel.currentUserRole.collectAsState()
     val isNetworkAvailable by viewModel.isNetworkAvailable.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val activity = remember(context) { context.findActivity() }
 
     // Intercept physical system back button or gesture presses professionally!
     androidx.activity.compose.BackHandler(enabled = currentScreen !is Screen.Home && currentScreen !is Screen.Splash) {
-        when (currentScreen) {
-            is Screen.CategoryView -> {
-                viewModel.navigateBack()
-            }
-            is Screen.ActiveQuiz -> {
-                viewModel.navigateBack()
-            }
-            is Screen.Score -> {
-                viewModel.navigateTo(Screen.Home, clearBackstack = true)
-            }
-            is Screen.AdminDashboard -> {
-                viewModel.navigateTo(Screen.Home, clearBackstack = true)
-            }
-            else -> {
-                viewModel.navigateBack()
+        RewardedInterstitialAdManager.showBackNavigationAd(activity) {
+            when (currentScreen) {
+                is Screen.CategoryView -> {
+                    viewModel.navigateBack()
+                }
+                is Screen.ActiveQuiz -> {
+                    viewModel.navigateBack()
+                }
+                is Screen.Score -> {
+                    viewModel.navigateTo(Screen.Home, clearBackstack = true)
+                }
+                is Screen.AdminDashboard -> {
+                    viewModel.navigateTo(Screen.Home, clearBackstack = true)
+                }
+                else -> {
+                    viewModel.navigateBack()
+                }
             }
         }
     }
@@ -1285,7 +1291,7 @@ fun HomeScreen(viewModel: QuizViewModel) {
                     .widthIn(max = 850.dp)
             ) {
                 when (activeTabState) {
-                    0 -> PracticeTabContent(viewModel = viewModel, onNavigateToAdmin = { if (canManageContent) activeTabState = 3 })
+                    0 -> PracticeTabContent(viewModel = viewModel, onNavigateToAdmin = { if (canManageContent) { activeTabState = if (currentUserRole?.equals("admin", ignoreCase = true) == true) 3 else 2 } })
                     1 -> ProgressTabContent(viewModel = viewModel)
                     2 -> ProfileTabContent(viewModel = viewModel)
                     3 -> if (canManageContent) AdminTabContent(viewModel = viewModel) else PracticeTabContent(viewModel = viewModel, onNavigateToAdmin = { })
@@ -1720,10 +1726,10 @@ fun PracticeTabContent(viewModel: QuizViewModel, onNavigateToAdmin: () -> Unit) 
                                     category.iconName.startsWith("file://")
 
                             Card(
+                                onClick = { viewModel.selectCategory(category) },
                                 modifier = Modifier
                                     .weight(1f)
                                     .heightIn(min = 115.dp)
-                                    .clickable { viewModel.selectCategory(category) }
                                     .testTag("category_card_${category.name.lowercase()}"),
                                 shape = RoundedCornerShape(16.dp),
                                 border = BorderStroke(1.5.dp, itemColor.copy(alpha = if (isCustomIcon) 0.85f else 0.35f)),
@@ -1821,7 +1827,7 @@ fun PracticeTabContent(viewModel: QuizViewModel, onNavigateToAdmin: () -> Unit) 
                     }
                 }
             } else {
-                parentCategories.forEach { parent ->
+                parentCategories.forEachIndexed { parentIndex, parent ->
                     val parentMatch = parent.name.contains(searchQuery, ignoreCase = true) || parent.description.contains(searchQuery, ignoreCase = true)
                     val parentSubs = categories.filter {
                         it.parentCategoryId == parent.documentId &&
@@ -1864,10 +1870,10 @@ fun PracticeTabContent(viewModel: QuizViewModel, onNavigateToAdmin: () -> Unit) 
                                             category.iconName.startsWith("file://")
 
                                     Card(
+                                        onClick = { viewModel.selectCategory(category) },
                                         modifier = Modifier
                                             .weight(1f)
                                             .heightIn(min = 115.dp)
-                                            .clickable { viewModel.selectCategory(category) }
                                             .testTag("category_card_${category.name.lowercase()}"),
                                         shape = RoundedCornerShape(16.dp),
                                         border = BorderStroke(1.5.dp, itemColor.copy(alpha = if (isCustomIcon) 0.85f else 0.35f)),
@@ -1967,6 +1973,16 @@ fun PracticeTabContent(viewModel: QuizViewModel, onNavigateToAdmin: () -> Unit) 
                     }
                 }
 
+                Spacer(modifier = Modifier.height(14.dp))
+                // Speed Math-style Native Ad in centre of Practice screen
+                com.example.ads.NativeAdContainer(
+                    placement = "practice_screen",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.CenterHorizontally)
+                )
+                Spacer(modifier = Modifier.height(14.dp))
+
                 val independentCategories = filteredCategories.filter { cat ->
                     cat.parentCategoryId == null && !categories.any { it.parentCategoryId == cat.documentId }
                 }
@@ -1998,10 +2014,10 @@ fun PracticeTabContent(viewModel: QuizViewModel, onNavigateToAdmin: () -> Unit) 
                                         category.iconName.startsWith("file://")
 
                                 Card(
+                                    onClick = { viewModel.selectCategory(category) },
                                     modifier = Modifier
                                         .weight(1f)
                                         .heightIn(min = 115.dp)
-                                        .clickable { viewModel.selectCategory(category) }
                                         .testTag("category_card_${category.name.lowercase()}"),
                                     shape = RoundedCornerShape(16.dp),
                                     border = BorderStroke(1.5.dp, itemColor.copy(alpha = if (isCustomIcon) 0.85f else 0.35f)),
@@ -2658,6 +2674,18 @@ fun ProgressTabContent(viewModel: QuizViewModel) {
         // Recharts Trend Performance Chart
         RechartsPerformanceChart(attempts = attempts)
 
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Native Ad below the primary progress summary and analytics
+        com.example.ads.NativeAdContainer(
+            placement = "progress_screen",
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.CenterHorizontally)
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
         // Historical list header
         Text(
             text = "Drills History log",
@@ -2805,6 +2833,12 @@ fun ProfileTabContent(viewModel: QuizViewModel) {
 
     // Tab state for Today, 7 Days, 30 Days
     var progressTabState by varRemember { mutableStateOf(0) } // 0: Today, 1: 7 Days, 2: 30 Days
+
+    var showPrivacyPolicyDialog by varRemember { mutableStateOf(false) }
+    var showContactUsDialog by varRemember { mutableStateOf(false) }
+    var showAboutDialog by varRemember { mutableStateOf(false) }
+    var showAdminContactUsDialog by varRemember { mutableStateOf(false) }
+    var showAdminPrivacyPolicyDialog by varRemember { mutableStateOf(false) }
 
     // Calculate progress based on the selection
     val filteredAttempts = remember(attempts, progressTabState) {
@@ -3099,6 +3133,299 @@ fun ProfileTabContent(viewModel: QuizViewModel) {
             }
         }
 
+        // SUPPORT & INFORMATION CARD (User & Admin Role Settings)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "SUPPORT & ABOUT",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                )
+
+                // Contact Us Option
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                        .clickable { showContactUsDialog = true }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.SupportAgent,
+                            contentDescription = "Contact Us",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Contact Us",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Get support via WhatsApp, Telegram, Email, etc.",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = "Open",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                // Privacy Policy Option
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                        .clickable { showPrivacyPolicyDialog = true }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.PrivacyTip,
+                            contentDescription = "Privacy Policy",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Privacy Policy",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "View data protection and privacy policy",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = "Open",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                // About Speed English Option
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                        .clickable { showAboutDialog = true }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Info,
+                            contentDescription = "About Speed English",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "About Speed English",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "App version, details, and features",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = "Open",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                // ADMIN ROLE EXTRA SETTINGS
+                if (role?.equals("admin", ignoreCase = true) == true) {
+                    Divider(modifier = Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                    Text(
+                        text = "ADMIN MANAGEMENT SETTINGS",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                    )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f))
+                            .clickable { showAdminContactUsDialog = true }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.SupportAgent,
+                                contentDescription = "Contact Us Management",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Contact Us Management",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                                Text(
+                                    text = "Add, edit, enable/disable support methods",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                )
+                            }
+                        }
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Manage",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f))
+                            .clickable { showAdminPrivacyPolicyDialog = true }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.PrivacyTip,
+                                contentDescription = "Privacy Policy Management",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Privacy Policy Management",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                                Text(
+                                    text = "Edit & publish app privacy terms",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                )
+                            }
+                        }
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Manage",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        if (showPrivacyPolicyDialog) {
+            UserPrivacyPolicyDialog(viewModel = viewModel, onDismiss = { showPrivacyPolicyDialog = false })
+        }
+        if (showContactUsDialog) {
+            UserContactUsDialog(viewModel = viewModel, onDismiss = { showContactUsDialog = false })
+        }
+        if (showAboutDialog) {
+            AboutSpeedEnglishDialog(onDismiss = { showAboutDialog = false })
+        }
+        if (showAdminContactUsDialog) {
+            AlertDialog(
+                onDismissRequest = { showAdminContactUsDialog = false },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.SupportAgent, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Contact Us Management", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = MaterialTheme.colorScheme.primary)
+                    }
+                },
+                text = {
+                    Box(modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+                        AdminContactUsManagementContent(viewModel = viewModel)
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = { showAdminContactUsDialog = false }) {
+                        Text("Close")
+                    }
+                }
+            )
+        }
+        if (showAdminPrivacyPolicyDialog) {
+            AlertDialog(
+                onDismissRequest = { showAdminPrivacyPolicyDialog = false },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.PrivacyTip, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Privacy Policy Management", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = MaterialTheme.colorScheme.primary)
+                    }
+                },
+                text = {
+                    Box(modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+                        AdminPrivacyPolicyManagementContent(viewModel = viewModel)
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = { showAdminPrivacyPolicyDialog = false }) {
+                        Text("Close")
+                    }
+                }
+            )
+        }
+
         if (showEditProfileDialog) {
             AlertDialog(
                 onDismissRequest = { showEditProfileDialog = false },
@@ -3336,6 +3663,18 @@ fun ProfileTabContent(viewModel: QuizViewModel) {
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Lower portion native ad below all profile identity and learning statistics
+            com.example.ads.NativeAdContainer(
+                placement = "profile_screen",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.CenterHorizontally)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }
@@ -3365,6 +3704,7 @@ fun AdminConsoleEmbed(viewModel: QuizViewModel) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CategoryViewScreen(viewModel: QuizViewModel, category: Category) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val quizzes by viewModel.quizzesForSelectedCategory.collectAsState()
     val countsMap by viewModel.quizQuestionsCountMap.collectAsState()
     var isSearchActive by varRemember { mutableStateOf(false) }
@@ -3373,6 +3713,7 @@ fun CategoryViewScreen(viewModel: QuizViewModel, category: Category) {
     LaunchedEffect(category.documentId) {
         viewModel.updateQuizQuestionsCounts()
         viewModel.fetchNewestQuestionsDirectlyFromServer(categoryId = category.documentId)
+        RewardedInterstitialAdManager.preloadAll(context)
     }
 
     val filteredQuizzes = if (searchQuery.isBlank()) {
@@ -3389,7 +3730,12 @@ fun CategoryViewScreen(viewModel: QuizViewModel, category: Category) {
             TopAppBar(
                 title = { Text(text = category.name, fontWeight = FontWeight.Bold) },
                 navigationIcon = {
-                    IconButton(onClick = { viewModel.navigateBack() }) {
+                    val activity = remember(context) { context.findActivity() }
+                    IconButton(onClick = {
+                        RewardedInterstitialAdManager.showBackNavigationAd(activity) {
+                            viewModel.navigateBack()
+                        }
+                    }) {
                         Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -3664,7 +4010,8 @@ fun CategoryViewScreen(viewModel: QuizViewModel, category: Category) {
                     }
                 }
             } else {
-                filteredQuizzes.forEach { quiz ->
+                val centerAdIndex = (filteredQuizzes.size / 2).coerceAtLeast(1) - 1
+                filteredQuizzes.forEachIndexed { quizIndex, quiz ->
                     val questionCount = countsMap[quiz.documentId] ?: 0
                     Card(
                         modifier = Modifier
@@ -3751,7 +4098,12 @@ fun CategoryViewScreen(viewModel: QuizViewModel, category: Category) {
                                 }
 
                                 Button(
-                                    onClick = { viewModel.startQuiz(quiz) },
+                                    onClick = {
+                                        val activity = context.findActivity()
+                                        RewardedInterstitialAdManager.showRewardedThenInterstitial(activity) {
+                                            viewModel.startQuiz(quiz)
+                                        }
+                                    },
                                     modifier = Modifier.testTag("start_quiz_btn_${quiz.documentId}"),
                                     shape = RoundedCornerShape(10.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = headerColor),
@@ -3761,6 +4113,19 @@ fun CategoryViewScreen(viewModel: QuizViewModel, category: Category) {
                                 }
                             }
                         }
+                    }
+
+                    // Speed Math-style Native Ad in centre of Quizzes browsing list
+                    if (quizIndex == centerAdIndex) {
+                        Spacer(modifier = Modifier.height(14.dp))
+                        com.example.ads.NativeAdContainer(
+                            placement = "quizzes_screen",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .widthIn(max = 600.dp)
+                                .align(Alignment.CenterHorizontally)
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
                     }
                 }
             }
@@ -3783,6 +4148,11 @@ fun ActiveQuizScreen(viewModel: QuizViewModel, quiz: Quiz) {
     val progressSyncError by viewModel.quizProgressSyncError.collectAsState()
     val isSnapshotSyncing by viewModel.isSnapshotSyncing.collectAsState()
     val isSubmittingQuiz by viewModel.isSubmittingQuiz.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    LaunchedEffect(Unit) {
+        RewardedInterstitialAdManager.preloadAll(context)
+    }
 
     if (isQuizLoading) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -3861,7 +4231,12 @@ fun ActiveQuizScreen(viewModel: QuizViewModel, quiz: Quiz) {
                             )
                         }
                     }
-                    IconButton(onClick = { viewModel.navigateTo(Screen.Home, clearBackstack = true) }) {
+                    val activity = remember(context) { context.findActivity() }
+                    IconButton(onClick = {
+                        RewardedInterstitialAdManager.showBackNavigationAd(activity) {
+                            viewModel.navigateTo(Screen.Home, clearBackstack = true)
+                        }
+                    }) {
                         Icon(imageVector = Icons.Default.Home, contentDescription = "Quit Quiz")
                     }
                 }
@@ -4051,7 +4426,16 @@ fun ActiveQuizScreen(viewModel: QuizViewModel, quiz: Quiz) {
 
             // Next / Submit Button
             Button(
-                onClick = { viewModel.advanceQuestion() },
+                onClick = {
+                    if (currentIndex == totalCount - 1) {
+                        val activity = context.findActivity()
+                        RewardedInterstitialAdManager.showRewardedThenInterstitial(activity) {
+                            viewModel.advanceQuestion()
+                        }
+                    } else {
+                        viewModel.advanceQuestion()
+                    }
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .widthIn(max = 600.dp)
@@ -4242,6 +4626,10 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
     val context = androidx.compose.ui.platform.LocalContext.current
     var isExporting by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
 
+    LaunchedEffect(Unit) {
+        RewardedInterstitialAdManager.preloadAll(context)
+    }
+
     // Determine values - use fallback if session is empty (e.g. initial view / preview mode)
     val resolvedAnswers = if (userAnswers.isEmpty()) {
         listOf(
@@ -4348,7 +4736,12 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
             TopAppBar(
                 title = { Text(text = "Quiz Results", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
-                    IconButton(onClick = { viewModel.navigateTo(Screen.Home, clearBackstack = true) }) {
+                    val activity = remember(context) { context.findActivity() }
+                    IconButton(onClick = {
+                        RewardedInterstitialAdManager.showBackNavigationAd(activity) {
+                            viewModel.navigateTo(Screen.Home, clearBackstack = true)
+                        }
+                    }) {
                         Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Home")
                     }
                 },
@@ -4372,7 +4765,12 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                     horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     Button(
-                        onClick = { viewModel.navigateTo(Screen.Home, clearBackstack = true) },
+                        onClick = {
+                            val activity = context.findActivity()
+                            RewardedInterstitialAdManager.showRewardedThenInterstitial(activity) {
+                                viewModel.navigateTo(Screen.Home, clearBackstack = true)
+                            }
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = Color.White),
                         shape = RoundedCornerShape(14.dp),
                         border = BorderStroke(2.dp, Color.Black),
@@ -4387,7 +4785,12 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                     }
 
                     Button(
-                        onClick = { viewModel.startQuiz(quiz) },
+                        onClick = {
+                            val activity = context.findActivity()
+                            RewardedInterstitialAdManager.showRewardedThenInterstitial(activity) {
+                                viewModel.startQuiz(quiz)
+                            }
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = categoryColor),
                         shape = RoundedCornerShape(14.dp),
                         border = BorderStroke(2.dp, Color.Black),
@@ -4659,7 +5062,18 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                 )
             }
 
-            Spacer(modifier = Modifier.height(28.dp))
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Native Ad after main score summary & 2x2 metrics grid, before deep-dive analysis
+            com.example.ads.NativeAdContainer(
+                placement = "quiz_result_screen",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 600.dp)
+                    .align(Alignment.CenterHorizontally)
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
 
             // Section Header Review
             Column(
@@ -4942,34 +5356,39 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                 Button(
                     onClick = {
                         if (!isExporting) {
-                            isExporting = true
-                            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                                try {
-                                    val uri = generateQuizPdfReport(
-                                        context = context,
-                                        quiz = quiz,
-                                        categoryName = category?.name ?: "General",
-                                        correctCount = correctCount,
-                                        wrongCount = wrongCount,
-                                        totalCount = totalCount,
-                                        percentage = percentage,
-                                        timeStr = timeStr,
-                                        avgTimeStr = avgTimeStr,
-                                        resolvedAnswers = resolvedAnswers
-                                    )
-                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                        isExporting = false
-                                        if (uri != null) {
-                                            android.widget.Toast.makeText(context, "PDF Report exported successfully!", android.widget.Toast.LENGTH_LONG).show()
-                                            sharePdfFile(context, uri)
-                                        } else {
-                                            android.widget.Toast.makeText(context, "Could not save PDF to Downloads.", android.widget.Toast.LENGTH_LONG).show()
+                            val activity = context.findActivity()
+                            RewardedInterstitialAdManager.showRewardedThenInterstitial(activity) {
+                                if (!isExporting) {
+                                    isExporting = true
+                                    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                        try {
+                                            val uri = generateQuizPdfReport(
+                                                context = context,
+                                                quiz = quiz,
+                                                categoryName = category?.name ?: "General",
+                                                correctCount = correctCount,
+                                                wrongCount = wrongCount,
+                                                totalCount = totalCount,
+                                                percentage = percentage,
+                                                timeStr = timeStr,
+                                                avgTimeStr = avgTimeStr,
+                                                resolvedAnswers = resolvedAnswers
+                                            )
+                                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                isExporting = false
+                                                if (uri != null) {
+                                                    android.widget.Toast.makeText(context, "PDF Report exported successfully!", android.widget.Toast.LENGTH_LONG).show()
+                                                    sharePdfFile(context, uri)
+                                                } else {
+                                                    android.widget.Toast.makeText(context, "Could not save PDF to Downloads.", android.widget.Toast.LENGTH_LONG).show()
+                                                }
+                                            }
+                                        } catch (e: Exception) {
+                                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                isExporting = false
+                                                android.widget.Toast.makeText(context, "Export Error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                                            }
                                         }
-                                    }
-                                } catch (e: Exception) {
-                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                        isExporting = false
-                                        android.widget.Toast.makeText(context, "Export Error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
                                     }
                                 }
                             }
@@ -5717,8 +6136,14 @@ fun AdminDashboardScreen(viewModel: QuizViewModel, initiallyVerified: Boolean = 
                     .padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val activity = remember(context) { context.findActivity() }
                 IconButton(
-                    onClick = { viewModel.navigateTo(Screen.Home, clearBackstack = true) },
+                    onClick = {
+                        RewardedInterstitialAdManager.showBackNavigationAd(activity) {
+                            viewModel.navigateTo(Screen.Home, clearBackstack = true)
+                        }
+                    },
                     modifier = Modifier.size(32.dp)
                 ) {
                     Icon(
@@ -5862,7 +6287,9 @@ fun AdminDashboardScreen(viewModel: QuizViewModel, initiallyVerified: Boolean = 
                             Triple(2, "Questions", Icons.Default.Star),
                             Triple(3, "Cloud Sync", Icons.Default.Cloud),
                             Triple(4, "Audit Log", Icons.Default.ReceiptLong),
-                            Triple(5, "Users", Icons.Default.People)
+                            Triple(5, "Users", Icons.Default.People),
+                            Triple(6, "Contact Us", Icons.Default.SupportAgent),
+                            Triple(7, "Privacy Policy", Icons.Default.PrivacyTip)
                         )
                         tabs.forEach { (index, label, icon) ->
                             val isSelected = selectedTab == index
@@ -6906,8 +7333,15 @@ fun AdminDashboardScreen(viewModel: QuizViewModel, initiallyVerified: Boolean = 
                                 modifier = Modifier.padding(16.dp)
                             )
                         } else {
-                            adminQuizzes.forEach { quiz ->
-                                AdminQuizCard(quiz, viewModel)
+                            adminQuizzes.forEachIndexed { index, quiz ->
+                                AdminQuizCard(
+                                    quiz = quiz,
+                                    viewModel = viewModel,
+                                    isFirst = index == 0,
+                                    isLast = index == adminQuizzes.size - 1,
+                                    onMoveUp = { viewModel.moveQuizUp(quiz.documentId) },
+                                    onMoveDown = { viewModel.moveQuizDown(quiz.documentId) }
+                                )
                                 if (false) Card(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -7670,6 +8104,12 @@ fun AdminDashboardScreen(viewModel: QuizViewModel, initiallyVerified: Boolean = 
                     5 -> {
                         AdminUsersContent(viewModel = viewModel)
                     }
+                    6 -> {
+                        AdminContactUsManagementContent(viewModel = viewModel)
+                    }
+                    7 -> {
+                        AdminPrivacyPolicyManagementContent(viewModel = viewModel)
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -7989,7 +8429,14 @@ fun EditQuizDialog(
 }
 
 @Composable
-fun AdminQuizCard(quiz: com.example.data.Quiz, viewModel: QuizViewModel) {
+fun AdminQuizCard(
+    quiz: com.example.data.Quiz,
+    viewModel: QuizViewModel,
+    isFirst: Boolean = false,
+    isLast: Boolean = false,
+    onMoveUp: () -> Unit = {},
+    onMoveDown: () -> Unit = {}
+) {
     var showEditDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     val categories by viewModel.adminCategoriesList.collectAsState()
@@ -8073,80 +8520,128 @@ fun AdminQuizCard(quiz: com.example.data.Quiz, viewModel: QuizViewModel) {
                     color = Color(0xFF111827)
                 )
             }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                // Interactive Shuffle Pill
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (quiz.shuffleQuestions) Color(0xFFE0F2FE) else Color(0xFFF1F5F9))
-                        .clickable { viewModel.toggleQuizShuffleStatus(quiz) }
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    contentAlignment = Alignment.Center
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Interactive Shuffle Pill
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (quiz.shuffleQuestions) Color(0xFFE0F2FE) else Color(0xFFF1F5F9))
+                            .clickable { viewModel.toggleQuizShuffleStatus(quiz) }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Shuffle",
+                                tint = if (quiz.shuffleQuestions) Color(0xFF0284C7) else Color(0xFF64748B),
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (quiz.shuffleQuestions) "Shuffle" else "No Shuffle",
+                                color = if (quiz.shuffleQuestions) Color(0xFF0369A1) else Color(0xFF475569),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+
+                    // Interactive Status Pill
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (quiz.isDraft) Color(0xFFF1F5F9) else Color(0xFFDCFCE7))
+                            .clickable { viewModel.toggleQuizDraftStatus(quiz) }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(if (quiz.isDraft) Color(0xFF64748B) else Color(0xFF16A34A))
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (quiz.isDraft) "Draft" else "Published",
+                                color = if (quiz.isDraft) Color(0xFF475569) else Color(0xFF15803D),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    // Move Up Action Button
+                    IconButton(
+                        onClick = onMoveUp,
+                        enabled = !isFirst,
+                        modifier = Modifier
+                            .size(32.dp)
+                            .testTag("move_up_${quiz.documentId}")
+                    ) {
                         Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Shuffle",
-                            tint = if (quiz.shuffleQuestions) Color(0xFF0284C7) else Color(0xFF64748B),
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = if (quiz.shuffleQuestions) "Shuffle" else "No Shuffle",
-                            color = if (quiz.shuffleQuestions) Color(0xFF0369A1) else Color(0xFF475569),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp
+                            imageVector = Icons.Default.KeyboardArrowUp,
+                            contentDescription = "Move Quiz Up",
+                            tint = if (!isFirst) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f),
+                            modifier = Modifier.size(20.dp)
                         )
                     }
-                }
 
-                // Interactive Status Pill
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (quiz.isDraft) Color(0xFFF1F5F9) else Color(0xFFDCFCE7))
-                        .clickable { viewModel.toggleQuizDraftStatus(quiz) }
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(if (quiz.isDraft) Color(0xFF64748B) else Color(0xFF16A34A))
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = if (quiz.isDraft) "Draft" else "Published",
-                            color = if (quiz.isDraft) Color(0xFF475569) else Color(0xFF15803D),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp
+                    // Move Down Action Button
+                    IconButton(
+                        onClick = onMoveDown,
+                        enabled = !isLast,
+                        modifier = Modifier
+                            .size(32.dp)
+                            .testTag("move_down_${quiz.documentId}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = "Move Quiz Down",
+                            tint = if (!isLast) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f),
+                            modifier = Modifier.size(20.dp)
                         )
                     }
-                }
 
-                IconButton(
-                    onClick = { showEditDialog = true }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Edit,
-                        contentDescription = "Edit Quiz Settings",
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
+                    // Edit Action Button
+                    IconButton(
+                        onClick = { showEditDialog = true },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Edit Quiz Settings",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
 
-                IconButton(
-                    onClick = { showDeleteConfirm = true }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Delete,
-                        contentDescription = "Delete Quiz",
-                        tint = MaterialTheme.colorScheme.error
-                    )
+                    // Delete Action Button
+                    IconButton(
+                        onClick = { showDeleteConfirm = true },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Delete Quiz",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }
@@ -9962,4 +10457,811 @@ fun BlockedAccountScreen(
         }
     }
 }
+
+// ==========================================
+// DYNAMIC CONTACT US & PRIVACY POLICY DIALOGS & MANAGERS
+// ==========================================
+
+@Composable
+fun UserPrivacyPolicyDialog(
+    viewModel: QuizViewModel,
+    onDismiss: () -> Unit
+) {
+    val privacyPolicy by viewModel.privacyPolicy.collectAsState()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.PrivacyTip,
+                    contentDescription = "Privacy Policy",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = privacyPolicy.title,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = privacyPolicy.content,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+@Composable
+fun UserContactUsDialog(
+    viewModel: QuizViewModel,
+    onDismiss: () -> Unit
+) {
+    val contactMethods by viewModel.contactMethods.collectAsState()
+    val enabledContacts = remember(contactMethods) { contactMethods.filter { it.isEnabled }.sortedBy { it.displayOrder } }
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.SupportAgent,
+                    contentDescription = "Contact Us",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Contact Us",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Reach out to us through any of the channels below. Tap a contact method to launch:",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+
+                if (enabledContacts.isEmpty()) {
+                    Text(
+                        text = "No contact methods are currently available. Please check back later.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    enabledContacts.forEach { contact ->
+                        val platformIcon = ContactPlatformHelper.getPlatformIcon(contact.platform)
+                        val platformColor = ContactPlatformHelper.getPlatformColor(contact.platform)
+
+                        Card(
+                            onClick = {
+                                ContactPlatformHelper.launchContactIntent(context, contact)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(platformColor.copy(alpha = 0.15f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = platformIcon,
+                                        contentDescription = contact.platform,
+                                        tint = platformColor,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.width(10.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = contact.title,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    if (contact.description.isNotBlank()) {
+                                        Text(
+                                            text = contact.description,
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    Text(
+                                        text = contact.value,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+
+                                Icon(
+                                    imageVector = Icons.Default.OpenInNew,
+                                    contentDescription = "Open Link",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+@Composable
+fun AboutSpeedEnglishDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = "About",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "About Speed English",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .clip(CircleShape)
+                        .border(BorderStroke(2.dp, MaterialTheme.colorScheme.primary), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.icon_option_five_1782049925584),
+                        contentDescription = "Speed English Logo",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Text(
+                    text = "Speed English",
+                    fontWeight = FontWeight.Black,
+                    fontSize = 18.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Text(
+                    text = "SSC & Banking Master Drills • v1.0.0",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "Speed English is a comprehensive mobile learning application engineered for competitive exam aspirants (SSC, Banking, Railway, Defense). Master English grammar, idioms, vocabulary, and spotting errors with timed drills and live performance analytics.",
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AdminContactUsManagementContent(viewModel: QuizViewModel) {
+    val contactMethods by viewModel.contactMethods.collectAsState()
+
+    var selectedPlatform by remember { mutableStateOf("WhatsApp") }
+    var title by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    var contactValue by remember { mutableStateOf("") }
+    var displayOrderText by remember { mutableStateOf((contactMethods.size + 1).toString()) }
+    var isEnabled by remember { mutableStateOf(true) }
+    var editingDocId by remember { mutableStateOf<String?>(null) }
+    var isDropdownExpanded by remember { mutableStateOf(false) }
+
+    var contactToDelete by remember { mutableStateOf<com.example.data.ContactMethod?>(null) }
+    var statusMsg by remember { mutableStateOf<String?>(null) }
+
+    fun onPlatformSelect(platform: String) {
+        selectedPlatform = platform
+        if (title.isBlank()) {
+            title = when (platform) {
+                "WhatsApp" -> "WhatsApp Support"
+                "Telegram" -> "Telegram Channel"
+                "Gmail" -> "Customer Support Email"
+                "Website" -> "Official Website"
+                "Facebook" -> "Facebook Page"
+                "Instagram" -> "Instagram Profile"
+                "X" -> "X (Twitter) Handle"
+                "YouTube" -> "YouTube Channel"
+                "Phone" -> "Phone Support"
+                "SMS" -> "SMS Helpline"
+                else -> "$platform Support"
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .widthIn(max = 600.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.SupportAgent,
+                            contentDescription = "Contact Us",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (editingDocId == null) "Add New Contact Method" else "Edit Contact Method",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    if (editingDocId != null) {
+                        TextButton(
+                            onClick = {
+                                editingDocId = null
+                                title = ""
+                                description = ""
+                                contactValue = ""
+                                selectedPlatform = "WhatsApp"
+                                displayOrderText = (contactMethods.size + 1).toString()
+                                isEnabled = true
+                            }
+                        ) {
+                            Text("Cancel Edit", fontSize = 12.sp)
+                        }
+                    }
+                }
+
+                ExposedDropdownMenuBox(
+                    expanded = isDropdownExpanded,
+                    onExpandedChange = { isDropdownExpanded = !isDropdownExpanded },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    OutlinedTextField(
+                        value = selectedPlatform,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Platform / Icon") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = ContactPlatformHelper.getPlatformIcon(selectedPlatform),
+                                contentDescription = selectedPlatform,
+                                tint = ContactPlatformHelper.getPlatformColor(selectedPlatform),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = isDropdownExpanded) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(),
+                        shape = RoundedCornerShape(10.dp)
+                    )
+
+                    ExposedDropdownMenu(
+                        expanded = isDropdownExpanded,
+                        onDismissRequest = { isDropdownExpanded = false }
+                    ) {
+                        ContactPlatformHelper.PLATFORMS.forEach { platform ->
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = ContactPlatformHelper.getPlatformIcon(platform),
+                                            contentDescription = platform,
+                                            tint = ContactPlatformHelper.getPlatformColor(platform),
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text(platform, fontSize = 13.sp)
+                                    }
+                                },
+                                onClick = {
+                                    onPlatformSelect(platform)
+                                    isDropdownExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("Display Title") },
+                    placeholder = { Text("e.g. WhatsApp Support") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp)
+                )
+
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Description") },
+                    placeholder = { Text("e.g. Chat with us for instant help") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp)
+                )
+
+                val valueLabel = when (selectedPlatform.lowercase()) {
+                    "whatsapp", "phone", "sms" -> "Phone Number (with country code)"
+                    "gmail", "email" -> "Email Address"
+                    "website" -> "Website URL"
+                    "telegram", "instagram", "x", "twitter", "youtube", "github", "linkedin" -> "Username / Handle or Full URL"
+                    else -> "URL / Account ID / Contact Detail"
+                }
+
+                OutlinedTextField(
+                    value = contactValue,
+                    onValueChange = { contactValue = it },
+                    label = { Text(valueLabel) },
+                    placeholder = { Text("e.g. +919876543210 or support@speedenglish.com") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp)
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = displayOrderText,
+                        onValueChange = { if (it.all { char -> char.isDigit() }) displayOrderText = it },
+                        label = { Text("Display Order") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(10.dp)
+                    )
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(top = 8.dp)
+                    ) {
+                        Switch(
+                            checked = isEnabled,
+                            onCheckedChange = { isEnabled = it }
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(if (isEnabled) "Enabled" else "Disabled", fontSize = 12.sp)
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        if (title.isBlank() || contactValue.isBlank()) {
+                            statusMsg = "Please fill in Title and Contact Value"
+                            return@Button
+                        }
+                        val order = displayOrderText.toIntOrNull() ?: (contactMethods.size + 1)
+                        val item = com.example.data.ContactMethod(
+                            documentId = editingDocId ?: "",
+                            platform = selectedPlatform,
+                            title = title.trim(),
+                            description = description.trim(),
+                            value = contactValue.trim(),
+                            displayOrder = order,
+                            isEnabled = isEnabled
+                        )
+                        viewModel.saveContactMethod(item) { success, err ->
+                            if (success) {
+                                statusMsg = "Contact method saved successfully!"
+                                editingDocId = null
+                                title = ""
+                                description = ""
+                                contactValue = ""
+                                selectedPlatform = "WhatsApp"
+                                displayOrderText = (contactMethods.size + 1).toString()
+                                isEnabled = true
+                            } else {
+                                statusMsg = "Error saving: ${err ?: "Unknown error"}"
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(
+                        imageVector = if (editingDocId == null) Icons.Default.Add else Icons.Default.Save,
+                        contentDescription = "Save",
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(if (editingDocId == null) "Add Contact Method" else "Update Contact Method", fontWeight = FontWeight.Bold)
+                }
+
+                if (statusMsg != null) {
+                    Text(
+                        text = statusMsg ?: "",
+                        fontSize = 11.sp,
+                        color = if (statusMsg?.contains("Error") == true) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+
+        Text(
+            text = "CONFIGURED CONTACT METHODS (${contactMethods.size})",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 6.dp)
+        )
+
+        if (contactMethods.isEmpty()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+            ) {
+                Text(
+                    text = "No contact methods created yet.",
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(16.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            contactMethods.forEach { contact ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (contact.isEnabled) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                    ),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(ContactPlatformHelper.getPlatformColor(contact.platform).copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = ContactPlatformHelper.getPlatformIcon(contact.platform),
+                                contentDescription = contact.platform,
+                                tint = ContactPlatformHelper.getPlatformColor(contact.platform),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = contact.title,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer
+                                ) {
+                                    Text(
+                                        text = "#${contact.displayOrder}",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    )
+                                }
+                            }
+                            if (contact.description.isNotBlank()) {
+                                Text(
+                                    text = contact.description,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Text(
+                                text = contact.value,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        Switch(
+                            checked = contact.isEnabled,
+                            onCheckedChange = { checked ->
+                                viewModel.toggleContactMethodEnabled(contact.documentId, checked)
+                            },
+                            modifier = Modifier.scale(0.85f)
+                        )
+
+                        IconButton(
+                            onClick = {
+                                editingDocId = contact.documentId
+                                selectedPlatform = contact.platform
+                                title = contact.title
+                                description = contact.description
+                                contactValue = contact.value
+                                displayOrderText = contact.displayOrder.toString()
+                                isEnabled = contact.isEnabled
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "Edit",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        IconButton(
+                            onClick = { contactToDelete = contact },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Delete",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (contactToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { contactToDelete = null },
+            title = { Text("Delete Contact Method?", fontWeight = FontWeight.Bold) },
+            text = { Text("Are you sure you want to delete '${contactToDelete?.title}'? This action cannot be undone.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val target = contactToDelete
+                        if (target != null) {
+                            viewModel.deleteContactMethod(target.documentId) { success, _ ->
+                                if (success) {
+                                    statusMsg = "Contact method deleted."
+                                }
+                            }
+                        }
+                        contactToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { contactToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun AdminPrivacyPolicyManagementContent(viewModel: QuizViewModel) {
+    val privacyPolicy by viewModel.privacyPolicy.collectAsState()
+
+    var policyTitle by remember(privacyPolicy) { mutableStateOf(privacyPolicy.title) }
+    var policyContent by remember(privacyPolicy) { mutableStateOf(privacyPolicy.content) }
+    var statusMsg by remember { mutableStateOf<String?>(null) }
+    var isSaving by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .widthIn(max = 600.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.PrivacyTip,
+                        contentDescription = "Privacy Policy",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Privacy Policy Management",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                Text(
+                    text = "Edit and publish the Privacy Policy. Changes will take effect immediately in real-time across all user sessions.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                OutlinedTextField(
+                    value = policyTitle,
+                    onValueChange = { policyTitle = it },
+                    label = { Text("Privacy Policy Title") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp)
+                )
+
+                OutlinedTextField(
+                    value = policyContent,
+                    onValueChange = { policyContent = it },
+                    label = { Text("Policy Text Content") },
+                    minLines = 10,
+                    maxLines = 18,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp)
+                )
+
+                Button(
+                    onClick = {
+                        if (policyTitle.isBlank() || policyContent.isBlank()) {
+                            statusMsg = "Title and Content cannot be empty."
+                            return@Button
+                        }
+                        isSaving = true
+                        viewModel.savePrivacyPolicy(policyTitle, policyContent) { success, err ->
+                            isSaving = false
+                            if (success) {
+                                statusMsg = "Privacy Policy published successfully!"
+                            } else {
+                                statusMsg = "Error saving: ${err ?: "Unknown error"}"
+                            }
+                        }
+                    },
+                    enabled = !isSaving,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Save,
+                        contentDescription = "Save",
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(if (isSaving) "Publishing..." else "Save & Publish Privacy Policy", fontWeight = FontWeight.Bold)
+                }
+
+                if (statusMsg != null) {
+                    Text(
+                        text = statusMsg ?: "",
+                        fontSize = 11.sp,
+                        color = if (statusMsg?.contains("Error") == true) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+    }
+}
+
 

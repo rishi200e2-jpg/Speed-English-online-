@@ -475,6 +475,9 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                             val remoteQuizzes = snapshot.documents.mapNotNull { doc ->
                                 val isDraftVal = doc.getBoolean("isDraft") ?: false
                                 val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
+                                val existingQuiz = repository.getQuizById(doc.id)
+                                val firestoreSort = doc.getLong("sortOrder")?.toInt()
+                                val sortOrderVal = firestoreSort ?: existingQuiz?.sortOrder ?: 0
                                 Quiz(
                                     documentId = doc.id,
                                     categoryId = doc.getString("categoryId") ?: "",
@@ -487,6 +490,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                                     shuffleQuestions = doc.getBoolean("shuffleQuestions") ?: false,
                                     marksPerQuestion = doc.getDouble("marksPerQuestion")?.toFloat() ?: 1.0f,
                                     negativeMarking = doc.getDouble("negativeMarking")?.toFloat() ?: 0.0f,
+                                    sortOrder = sortOrderVal,
                                     createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
                                     updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis(),
                                     publishedAt = doc.getLong("publishedAt")
@@ -604,6 +608,9 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 val remoteQuizzes = quizSnapshot.documents.mapNotNull { doc ->
                     val isDraftVal = doc.getBoolean("isDraft") ?: false
                     val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
+                    val existingQuiz = repository.getQuizById(doc.id)
+                    val firestoreSort = doc.getLong("sortOrder")?.toInt()
+                    val sortOrderVal = firestoreSort ?: existingQuiz?.sortOrder ?: 0
                     Quiz(
                         documentId = doc.id,
                         categoryId = doc.getString("categoryId") ?: "",
@@ -616,6 +623,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                         shuffleQuestions = doc.getBoolean("shuffleQuestions") ?: false,
                         marksPerQuestion = doc.getDouble("marksPerQuestion")?.toFloat() ?: 1.0f,
                         negativeMarking = doc.getDouble("negativeMarking")?.toFloat() ?: 0.0f,
+                        sortOrder = sortOrderVal,
                         createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
                         updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis(),
                         publishedAt = doc.getLong("publishedAt")
@@ -1580,6 +1588,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
             seedAuditLogsIfNeeded()
 
             updateQuizQuestionsCounts()
+            startObservingContactMethodsAndPrivacyPolicy()
 
             // Attach SuperFast SyncManager Auth State Observer
             syncManager.attachAuthStateObserver(
@@ -2879,6 +2888,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 val docId = UUID.randomUUID().toString()
                 val now = System.currentTimeMillis()
                 val statusStr = if (isDraft) "draft" else "published"
+                val currentQuizzes = repository.getQuizzesByCategory(categoryId)
+                val nextSortOrder = if (currentQuizzes.isNotEmpty()) (currentQuizzes.maxOfOrNull { it.sortOrder } ?: 0) + 1 else 0
                 val newQuiz = Quiz(
                     documentId = docId,
                     categoryId = categoryId,
@@ -2891,6 +2902,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                     shuffleQuestions = shuffleQuestions,
                     marksPerQuestion = marksPerQuestion,
                     negativeMarking = negativeMarking,
+                    sortOrder = nextSortOrder,
                     createdAt = now,
                     updatedAt = now,
                     publishedAt = if (isDraft) null else now
@@ -2967,6 +2979,72 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val updated = quiz.copy(shuffleQuestions = !quiz.shuffleQuestions)
             updateQuiz(updated)
+        }
+    }
+
+    fun moveQuizUp(quizId: String) {
+        moveQuiz(quizId, -1)
+    }
+
+    fun moveQuizDown(quizId: String) {
+        moveQuiz(quizId, 1)
+    }
+
+    private fun moveQuiz(quizId: String, direction: Int) {
+        val currentList = _adminQuizzesList.value.toMutableList()
+        val currentIndex = currentList.indexOfFirst { it.documentId == quizId }
+        if (currentIndex == -1) return
+        val targetIndex = currentIndex + direction
+        if (targetIndex < 0 || targetIndex >= currentList.size) return
+
+        _syncStatusMessage.value = "Reordering quizzes..."
+
+        val movedItem = currentList.removeAt(currentIndex)
+        currentList.add(targetIndex, movedItem)
+
+        val now = System.currentTimeMillis()
+        val reorderedList = currentList.mapIndexed { index, quiz ->
+            quiz.copy(sortOrder = index, updatedAt = now)
+        }
+
+        // Immediate local state update for zero UI lag
+        _adminQuizzesList.value = reorderedList
+
+        // Synchronize category user quizzes if active
+        val currentCatId = currentAdminCategoryId
+        if (currentCatId != null) {
+            _quizzesForSelectedCategory.value = reorderedList.filter { !it.isDraft }
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // Update local Room database immediately using insertQuizzes (atomic replace)
+                repository.insertQuizzes(reorderedList)
+
+                // Batch write to Cloud Firestore using merge to prevent NOT_FOUND errors
+                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                val batch = firestore.batch()
+                reorderedList.forEach { q ->
+                    val docRef = firestore.collection("quizzes").document(q.documentId)
+                    batch.set(
+                        docRef,
+                        mapOf(
+                            "sortOrder" to q.sortOrder,
+                            "updatedAt" to q.updatedAt
+                        ),
+                        com.google.firebase.firestore.SetOptions.merge()
+                    )
+                }
+                com.google.android.gms.tasks.Tasks.await(batch.commit())
+
+                val quizTitle = reorderedList[targetIndex].title
+                val dirText = if (direction < 0) "UP" else "DOWN"
+                logAdminAction("REORDER_QUIZ", "QUIZ", quizId, "Moved quiz '$quizTitle' $dirText to position ${targetIndex + 1}")
+                _syncStatusMessage.value = "Quiz order updated and synced to cloud."
+            } catch (e: Exception) {
+                Log.w("QuizViewModel", "Firestore sync warning during reorder: ${e.message}")
+                _syncStatusMessage.value = "Quiz order saved locally (cloud pending)."
+            }
         }
     }
 
@@ -3622,5 +3700,261 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         val networkText = if (_isNetworkAvailable.value) "Online" else "Offline"
         val syncText = if (_isLiveSyncing.value) "Active" else "Paused"
         _syncStatusMessage.value = "Diagnostics: Firestore SSoT connection is $networkText. Live Synchronization is $syncText."
+    }
+
+    // ==========================================
+    // DYNAMIC CONTACT US & PRIVACY POLICY
+    // ==========================================
+    private val _contactMethods = MutableStateFlow<List<com.example.data.ContactMethod>>(emptyList())
+    val contactMethods: StateFlow<List<com.example.data.ContactMethod>> = _contactMethods.asStateFlow()
+
+    private val _privacyPolicy = MutableStateFlow<com.example.data.PrivacyPolicyData>(com.example.data.PrivacyPolicyData())
+    val privacyPolicy: StateFlow<com.example.data.PrivacyPolicyData> = _privacyPolicy.asStateFlow()
+
+    private var contactMethodsListenerRegistration: com.google.firebase.firestore.ListenerRegistration? = null
+    private var privacyPolicyListenerRegistration: com.google.firebase.firestore.ListenerRegistration? = null
+
+    fun startObservingContactMethodsAndPrivacyPolicy() {
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+
+        if (_contactMethods.value.isEmpty()) {
+            seedDefaultContactMethods()
+        }
+        if (_privacyPolicy.value.content.isBlank()) {
+            seedDefaultPrivacyPolicy()
+        }
+
+        if (contactMethodsListenerRegistration == null) {
+            contactMethodsListenerRegistration = firestore.collection("contact_methods")
+                .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
+                    if (error != null) {
+                        Log.e("QuizViewModel", "Error in contact_methods sync: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        val items = snapshot.documents.mapNotNull { doc ->
+                            try {
+                                com.example.data.ContactMethod(
+                                    documentId = doc.id,
+                                    platform = doc.getString("platform") ?: "Website",
+                                    title = doc.getString("title") ?: "",
+                                    description = doc.getString("description") ?: "",
+                                    value = doc.getString("value") ?: "",
+                                    displayOrder = doc.getLong("displayOrder")?.toInt() ?: 0,
+                                    isEnabled = doc.getBoolean("isEnabled") ?: true,
+                                    createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                                    updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
+                                )
+                            } catch (e: Exception) { null }
+                        }.sortedBy { it.displayOrder }
+
+                        if (items.isNotEmpty()) {
+                            _contactMethods.value = items
+                        }
+                    }
+                }
+        }
+
+        if (privacyPolicyListenerRegistration == null) {
+            privacyPolicyListenerRegistration = firestore.collection("app_config").document("privacy_policy")
+                .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
+                    if (error != null) {
+                        Log.e("QuizViewModel", "Error in privacy_policy sync: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null && snapshot.exists()) {
+                        val title = snapshot.getString("title") ?: "Privacy Policy"
+                        val content = snapshot.getString("content") ?: ""
+                        val updatedAt = snapshot.getLong("updatedAt") ?: System.currentTimeMillis()
+                        _privacyPolicy.value = com.example.data.PrivacyPolicyData(title = title, content = content, updatedAt = updatedAt)
+                    }
+                }
+        }
+    }
+
+    private fun seedDefaultContactMethods() {
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        val defaultContacts = listOf(
+            com.example.data.ContactMethod(
+                documentId = "cm_whatsapp",
+                platform = "WhatsApp",
+                title = "WhatsApp Support",
+                description = "Chat with us directly on WhatsApp for instant assistance",
+                value = "919876543210",
+                displayOrder = 1,
+                isEnabled = true
+            ),
+            com.example.data.ContactMethod(
+                documentId = "cm_telegram",
+                platform = "Telegram",
+                title = "Telegram Community Channel",
+                description = "Join our official Speed English Telegram study group",
+                value = "SpeedEnglishOfficial",
+                displayOrder = 2,
+                isEnabled = true
+            ),
+            com.example.data.ContactMethod(
+                documentId = "cm_gmail",
+                platform = "Gmail",
+                title = "Customer Service Email",
+                description = "Send us your feedback, bug reports or questions via email",
+                value = "support@speedenglish.com",
+                displayOrder = 3,
+                isEnabled = true
+            ),
+            com.example.data.ContactMethod(
+                documentId = "cm_website",
+                platform = "Website",
+                title = "Official Website",
+                description = "Explore practice drills, updates, and online resources",
+                value = "https://speedenglish.com",
+                displayOrder = 4,
+                isEnabled = true
+            )
+        )
+        _contactMethods.value = defaultContacts
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val batch = firestore.batch()
+                defaultContacts.forEach { contact ->
+                    val ref = firestore.collection("contact_methods").document(contact.documentId)
+                    val data = mapOf(
+                        "platform" to contact.platform,
+                        "title" to contact.title,
+                        "description" to contact.description,
+                        "value" to contact.value,
+                        "displayOrder" to contact.displayOrder,
+                        "isEnabled" to contact.isEnabled,
+                        "createdAt" to contact.createdAt,
+                        "updatedAt" to contact.updatedAt
+                    )
+                    batch.set(ref, data)
+                }
+                batch.commit()
+            } catch (e: Exception) {
+                Log.e("QuizViewModel", "Error seeding default contact methods: ${e.message}")
+            }
+        }
+    }
+
+    private fun seedDefaultPrivacyPolicy() {
+        val defaultPolicy = com.example.data.PrivacyPolicyData()
+        _privacyPolicy.value = defaultPolicy
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                val data = mapOf(
+                    "title" to defaultPolicy.title,
+                    "content" to defaultPolicy.content,
+                    "updatedAt" to defaultPolicy.updatedAt
+                )
+                firestore.collection("app_config").document("privacy_policy").set(data)
+            } catch (e: Exception) {
+                Log.e("QuizViewModel", "Error seeding default privacy policy: ${e.message}")
+            }
+        }
+    }
+
+    fun saveContactMethod(
+        contact: com.example.data.ContactMethod,
+        onResult: (Boolean, String?) -> Unit = { _, _ -> }
+    ) {
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        val docId = if (contact.documentId.isNotBlank()) contact.documentId else firestore.collection("contact_methods").document().id
+        val now = System.currentTimeMillis()
+        val updatedContact = contact.copy(documentId = docId, updatedAt = now)
+
+        // Optimistic local update
+        val currentList = _contactMethods.value.toMutableList()
+        val existingIndex = currentList.indexOfFirst { it.documentId == docId }
+        if (existingIndex >= 0) {
+            currentList[existingIndex] = updatedContact
+        } else {
+            currentList.add(updatedContact)
+        }
+        _contactMethods.value = currentList.sortedBy { it.displayOrder }
+
+        val data = mapOf(
+            "platform" to updatedContact.platform,
+            "title" to updatedContact.title,
+            "description" to updatedContact.description,
+            "value" to updatedContact.value,
+            "displayOrder" to updatedContact.displayOrder,
+            "isEnabled" to updatedContact.isEnabled,
+            "createdAt" to if (updatedContact.createdAt > 0L) updatedContact.createdAt else now,
+            "updatedAt" to now
+        )
+
+        firestore.collection("contact_methods").document(docId).set(data)
+            .addOnSuccessListener {
+                onResult(true, null)
+            }
+            .addOnFailureListener { e ->
+                Log.w("QuizViewModel", "Firestore contact_methods write skipped/failed: ${e.message}")
+                onResult(true, null)
+            }
+    }
+
+    fun deleteContactMethod(
+        documentId: String,
+        onResult: (Boolean, String?) -> Unit = { _, _ -> }
+    ) {
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+
+        // Optimistic local deletion
+        _contactMethods.value = _contactMethods.value.filter { it.documentId != documentId }
+
+        firestore.collection("contact_methods").document(documentId).delete()
+            .addOnSuccessListener {
+                onResult(true, null)
+            }
+            .addOnFailureListener { e ->
+                Log.w("QuizViewModel", "Firestore contact_methods delete skipped/failed: ${e.message}")
+                onResult(true, null)
+            }
+    }
+
+    fun toggleContactMethodEnabled(documentId: String, isEnabled: Boolean) {
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+
+        // Optimistic local update
+        _contactMethods.value = _contactMethods.value.map {
+            if (it.documentId == documentId) it.copy(isEnabled = isEnabled, updatedAt = System.currentTimeMillis()) else it
+        }
+
+        firestore.collection("contact_methods").document(documentId).update(
+            "isEnabled", isEnabled,
+            "updatedAt", System.currentTimeMillis()
+        ).addOnFailureListener { e ->
+            Log.w("QuizViewModel", "Firestore toggleContactMethodEnabled skipped/failed: ${e.message}")
+        }
+    }
+
+    fun savePrivacyPolicy(
+        title: String,
+        content: String,
+        onResult: (Boolean, String?) -> Unit = { _, _ -> }
+    ) {
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        val now = System.currentTimeMillis()
+        val updatedPolicy = com.example.data.PrivacyPolicyData(title = title.ifBlank { "Privacy Policy" }, content = content, updatedAt = now)
+
+        // Optimistic local update
+        _privacyPolicy.value = updatedPolicy
+
+        val data = mapOf(
+            "title" to updatedPolicy.title,
+            "content" to updatedPolicy.content,
+            "updatedAt" to now
+        )
+
+        firestore.collection("app_config").document("privacy_policy").set(data)
+            .addOnSuccessListener {
+                onResult(true, null)
+            }
+            .addOnFailureListener { e ->
+                Log.w("QuizViewModel", "Firestore privacy_policy write skipped/failed: ${e.message}")
+                onResult(true, null)
+            }
     }
 }

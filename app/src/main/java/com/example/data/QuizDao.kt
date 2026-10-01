@@ -29,16 +29,16 @@ interface QuizDao {
     @Query("SELECT * FROM quizzes WHERE documentId = :quizId LIMIT 1")
     suspend fun getQuizById(quizId: String): Quiz?
 
-    @Query("SELECT * FROM quizzes WHERE categoryId = :categoryId ORDER BY documentId ASC")
+    @Query("SELECT * FROM quizzes WHERE categoryId = :categoryId ORDER BY sortOrder ASC, createdAt ASC, documentId ASC")
     fun getQuizzesByCategoryFlow(categoryId: String): Flow<List<Quiz>>
 
-    @Query("SELECT * FROM quizzes WHERE categoryId = :categoryId ORDER BY documentId ASC")
+    @Query("SELECT * FROM quizzes WHERE categoryId = :categoryId ORDER BY sortOrder ASC, createdAt ASC, documentId ASC")
     suspend fun getQuizzesByCategory(categoryId: String): List<Quiz>
 
-    @Query("SELECT * FROM quizzes ORDER BY documentId ASC")
+    @Query("SELECT * FROM quizzes ORDER BY sortOrder ASC, createdAt ASC, documentId ASC")
     fun getAllQuizzesFlow(): Flow<List<Quiz>>
 
-    @Query("SELECT * FROM quizzes ORDER BY documentId ASC")
+    @Query("SELECT * FROM quizzes ORDER BY sortOrder ASC, createdAt ASC, documentId ASC")
     suspend fun getAllQuizzes(): List<Quiz>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

@@ -126,6 +126,9 @@ dependencies {
   implementation(libs.firebase.firestore)
   implementation(libs.firebase.storage)
 
+  // Google Mobile Ads SDK for Native Ads
+  implementation(libs.play.services.ads)
+
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)
