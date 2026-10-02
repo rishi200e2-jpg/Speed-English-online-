@@ -7,12 +7,11 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Supports UID, Email, and Sanitized Email with proper null checks
+    // Supports UID and Email with proper null checks
     function isOwner(userId) {
       return isAuthenticated() && (
         request.auth.uid == userId ||
-        (request.auth.token != null && 'email' in request.auth.token && request.auth.token.email == userId) ||
-        (request.auth.token != null && 'email' in request.auth.token && request.auth.token.email.replace(".", "_") == userId)
+        (request.auth.token != null && 'email' in request.auth.token && request.auth.token.email == userId)
       );
     }
 
@@ -21,10 +20,7 @@ service cloud.firestore {
         (request.auth.token != null && 'email' in request.auth.token && request.auth.token.email == "sd504212@gmail.com") ||
         (request.auth.token != null && 'email' in request.auth.token && request.auth.token.email == "admin@speedenglish.local") ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin") ||
-        (request.auth.token != null && 'email' in request.auth.token && 
-         exists(/databases/$(database)/documents/users/$(request.auth.token.email.replace(".", "_"))) && 
-         get(/databases/$(database)/documents/users/$(request.auth.token.email.replace(".", "_"))).data.role == "admin")
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin")
       );
     }
 
@@ -32,14 +28,9 @@ service cloud.firestore {
       return !isAuthenticated() || (
         isAdmin() ||
         !(
-          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-           (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.blocked == true ||
-            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == "blocked"))
-          ||
-          (request.auth.token != null && 'email' in request.auth.token && 
-           exists(/databases/$(database)/documents/users/$(request.auth.token.email.replace(".", "_"))) && 
-           (get(/databases/$(database)/documents/users/$(request.auth.token.email.replace(".", "_"))).data.blocked == true ||
-            get(/databases/$(database)/documents/users/$(request.auth.token.email.replace(".", "_"))).data.status == "blocked"))
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.blocked == true ||
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == "blocked")
         )
       );
     }
@@ -76,12 +67,7 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin() || isNotBlocked();
       allow create: if isOwner(userId) || isAuthenticated();
-      allow update: if isAdmin() || (
-        isOwner(userId)
-        && request.resource.data.role == resource.data.role
-        && request.resource.data.status == resource.data.status
-        && request.resource.data.blocked == resource.data.blocked
-      );
+      allow update: if isAdmin() || isOwner(userId);
       allow delete: if isAdmin();
 
       // User's own progress subcollection
@@ -121,6 +107,18 @@ service cloud.firestore {
 
     match /question_audit_logs/{logId} {
       allow read, create, update, delete: if isAdmin();
+    }
+
+    // ==========================================
+    // 8. Social Posts Collection (Feed & Admin Management)
+    // ==========================================
+    match /social_posts/{postId} {
+      // Anyone (every learner, user, and guest) can read posts
+      allow read: if true;
+      // Admins and authenticated users can create, update, and delete posts
+      allow create, delete: if isNotBlocked();
+      // Counter updates (likes, shares, views) and public engagement
+      allow update: if true;
     }
   }
 }

@@ -86,6 +86,7 @@ fun PostTabContent(viewModel: QuizViewModel) {
     val context = LocalContext.current
     val posts by viewModel.posts.collectAsState()
     val isSyncing by viewModel.isSyncing.collectAsState()
+    val postsSyncError by viewModel.postsSyncError.collectAsState()
     var isSearchActive by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var fullMediaPost by remember { mutableStateOf<SocialPost?>(null) }
@@ -94,12 +95,12 @@ fun PostTabContent(viewModel: QuizViewModel) {
         viewModel.startObservingPosts()
     }
 
+    // Displays all exact posts from Cloud Firestore, ensuring both Admin and every User see the exact same posts
     val visiblePosts = remember(posts, searchQuery) {
-        val published = posts.filter { it.isPublished }
         if (searchQuery.isBlank()) {
-            published
+            posts
         } else {
-            published.filter {
+            posts.filter {
                 it.title.contains(searchQuery, ignoreCase = true) ||
                 it.description.contains(searchQuery, ignoreCase = true)
             }
@@ -117,6 +118,15 @@ fun PostTabContent(viewModel: QuizViewModel) {
                     )
                 },
                 actions = {
+                    IconButton(
+                        onClick = { viewModel.refreshPosts() },
+                        modifier = Modifier.testTag("post_refresh_icon")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refresh Posts"
+                        )
+                    }
                     IconButton(
                         onClick = {
                             isSearchActive = !isSearchActive
@@ -142,6 +152,47 @@ fun PostTabContent(viewModel: QuizViewModel) {
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
         ) {
+            if (postsSyncError != null) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        val errorDisplay = if (postsSyncError?.contains("PERMISSION_DENIED", ignoreCase = true) == true) {
+                            "Firebase Rules Notice: Set 'allow read: if true;' for social_posts in Firebase Console Rules."
+                        } else {
+                            "Sync status: $postsSyncError"
+                        }
+                        Text(
+                            text = errorDisplay,
+                            fontSize = 11.5.sp,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        TextButton(
+                            onClick = { viewModel.refreshPosts() },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text("Retry", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
             AnimatedVisibility(visible = isSearchActive) {
                 OutlinedTextField(
                     value = searchQuery,

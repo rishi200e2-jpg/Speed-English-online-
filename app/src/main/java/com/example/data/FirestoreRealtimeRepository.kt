@@ -263,30 +263,43 @@ class FirestoreRealtimeRepository(
                 }
 
                 if (snapshot != null) {
-                    val posts = snapshot.documents.mapNotNull { doc ->
-                        try {
-                            SocialPost(
-                                documentId = doc.getString("documentId") ?: doc.id,
-                                title = doc.getString("title") ?: "",
-                                description = doc.getString("description") ?: "",
-                                mediaUrl = doc.getString("mediaUrl") ?: "",
-                                mediaType = doc.getString("mediaType") ?: "image",
-                                videoDuration = doc.getString("videoDuration") ?: "",
-                                authorName = doc.getString("authorName") ?: "Speed English",
-                                authorAvatarUrl = doc.getString("authorAvatarUrl") ?: "",
-                                isPinned = doc.getBoolean("isPinned") ?: false,
-                                isPublished = doc.getBoolean("isPublished") ?: true,
-                                viewCount = doc.getLong("viewCount") ?: 0L,
-                                likeCount = doc.getLong("likeCount") ?: 0L,
-                                shareCount = doc.getLong("shareCount") ?: 0L,
-                                likedUserIds = (doc.get("likedUserIds") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList(),
-                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
-                                updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
-                            )
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Failed to parse SocialPost doc ${doc.id}", e)
-                            null
+                    val posts = snapshot.documents.map { doc ->
+                        val getLongVal: (String, Long) -> Long = { field, defaultVal ->
+                            val raw = doc.get(field)
+                            when (raw) {
+                                is Number -> raw.toLong()
+                                is String -> raw.toLongOrNull() ?: defaultVal
+                                else -> defaultVal
+                            }
                         }
+                        val getBoolVal: (String, Boolean) -> Boolean = { field, defaultVal ->
+                            val raw = doc.get(field)
+                            when (raw) {
+                                is Boolean -> raw
+                                is String -> raw.equals("true", ignoreCase = true)
+                                is Number -> raw.toInt() != 0
+                                else -> defaultVal
+                            }
+                        }
+
+                        SocialPost(
+                            documentId = doc.getString("documentId")?.ifBlank { doc.id } ?: doc.id,
+                            title = doc.getString("title") ?: "",
+                            description = doc.getString("description") ?: "",
+                            mediaUrl = doc.getString("mediaUrl") ?: "",
+                            mediaType = doc.getString("mediaType") ?: "image",
+                            videoDuration = doc.getString("videoDuration") ?: "",
+                            authorName = doc.getString("authorName") ?: "Speed English",
+                            authorAvatarUrl = doc.getString("authorAvatarUrl") ?: "",
+                            isPinned = getBoolVal("isPinned", false),
+                            isPublished = getBoolVal("isPublished", true),
+                            viewCount = getLongVal("viewCount", 0L),
+                            likeCount = getLongVal("likeCount", 0L),
+                            shareCount = getLongVal("shareCount", 0L),
+                            likedUserIds = (doc.get("likedUserIds") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList(),
+                            createdAt = getLongVal("createdAt", System.currentTimeMillis()),
+                            updatedAt = getLongVal("updatedAt", System.currentTimeMillis())
+                        )
                     }.sortedWith(compareByDescending<SocialPost> { it.isPinned }.thenByDescending { it.createdAt })
                     trySend(posts)
                 }
