@@ -58,30 +58,69 @@ object NativeAdManager {
     }
 
     /**
+     * Dedicated method for navigation-based Native Ad refresh on Practice, Progress, Profile.
+     * Safely refreshes the ad when online, or gracefully hides and cleans up when offline.
+     */
+    fun refreshAdForPlacement(context: Context, placement: String) {
+        val isOnline = com.example.data.NetworkConnectivityHelper.isInternetAvailable(context)
+        if (!isOnline) {
+            val oldAd = adCache.remove(placement)
+            if (oldAd != null) {
+                try {
+                    oldAd.destroy()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error disposing old ad on offline refresh: ${e.message}", e)
+                }
+            }
+            val flow = stateFlows.getOrPut(placement) { MutableStateFlow(NativeAdState.Empty) }
+            flow.value = NativeAdState.Empty
+            return
+        }
+        loadAdForPlacement(context, placement, forceReload = true)
+    }
+
+    /**
      * Requests a native ad for a given placement key.
      *
-     * 1. Checks if a valid cached ad is already available. If so, emits it immediately.
-     * 2. Checks if an ad is already loading for this placement; prevents redundant requests.
-     * 3. Checks if the placement recently failed; respects the backoff threshold.
-     * 4. Loads the ad via AdLoader using Activity context and updates state.
+     * 1. Checks internet availability: if offline, suppresses request, removes stale cached ad, and hides ad container.
+     * 2. If online and valid cached ad exists and reload is not forced, reuses it immediately.
+     * 3. Checks if an ad is already loading for this placement; prevents redundant requests.
+     * 4. Checks if the placement recently failed; respects the backoff threshold.
+     * 5. Loads the ad via AdLoader using Activity context and updates state.
      */
     fun loadAdForPlacement(context: Context, placement: String, forceReload: Boolean = false) {
         val flow = stateFlows.getOrPut(placement) { MutableStateFlow(NativeAdState.Empty) }
 
-        // 1. If valid cached ad exists and reload is not forced, reuse it immediately
+        // 1. Check internet availability: strictly avoid loading or showing ads while offline
+        val isOnline = com.example.data.NetworkConnectivityHelper.isInternetAvailable(context)
+        if (!isOnline) {
+            Log.d(TAG, "No internet connectivity. Suppressing native ad request for '$placement'.")
+            val oldAd = adCache.remove(placement)
+            if (oldAd != null) {
+                try {
+                    oldAd.destroy()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error disposing old ad on offline check: ${e.message}", e)
+                }
+            }
+            flow.value = NativeAdState.Empty
+            return
+        }
+
+        // 2. If valid cached ad exists and reload is not forced, reuse it immediately
         val existingAd = adCache[placement]
         if (!forceReload && existingAd != null) {
             flow.value = NativeAdState.Loaded(existingAd)
             return
         }
 
-        // 2. Prevent concurrent duplicate loading for the same placement
+        // 3. Prevent concurrent duplicate loading for the same placement
         if (activeLoaders[placement] == true) {
             Log.d(TAG, "AdLoader already running for placement '$placement'. Skipping duplicate request.")
             return
         }
 
-        // 3. Prevent rapid retry loops during poor connectivity
+        // 4. Prevent rapid retry loops during poor connectivity
         val now = System.currentTimeMillis()
         val lastFail = lastFailureTime[placement] ?: 0L
         if (!forceReload && (now - lastFail) < RETRY_BACKOFF_MS) {
@@ -136,8 +175,9 @@ object NativeAdManager {
                                 "NativeAd failed to load for '$placement' (Code: ${loadAdError.code}, Message: ${loadAdError.message})"
                             )
 
-                            if (AdMobConfig.USE_TEST_ADS) {
-                                // In development mode, display high-fidelity test preview so user sees the Speed Math ad experience
+                            val currentlyOnline = com.example.data.NetworkConnectivityHelper.isInternetAvailable(context)
+                            if (currentlyOnline && AdMobConfig.USE_TEST_ADS) {
+                                // In development mode with network, display high-fidelity test preview
                                 flow.value = getFallbackTestAd(placement)
                             } else {
                                 flow.value = NativeAdState.Failed(loadAdError.code, loadAdError.message)

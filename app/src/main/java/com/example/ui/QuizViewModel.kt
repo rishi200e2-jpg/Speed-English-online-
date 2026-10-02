@@ -290,6 +290,161 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var auditLogsFirestoreListenerRegistration: com.google.firebase.firestore.ListenerRegistration? = null
+
+    /**
+     * Listens to Cloud Firestore question_audit_logs collection in real-time,
+     * ensuring newly added post audit logs and question audit logs appear instantly
+     * on the Admin Audit Log panel.
+     */
+    fun startObservingAuditLogsFirestore() {
+        if (isTestEnv) return
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        if (auditLogsFirestoreListenerRegistration == null) {
+            auditLogsFirestoreListenerRegistration = firestore.collection("question_audit_logs")
+                .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
+                    if (error != null) {
+                        Log.e("QuizViewModel", "Error listening to question_audit_logs: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null && !snapshot.isEmpty) {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            val logs = snapshot.documents.mapNotNull { doc ->
+                                try {
+                                    val actionType = doc.getString("actionType") ?: "MODIFIED"
+                                    val questionId = doc.getString("questionId") ?: doc.id
+                                    val questionText = doc.getString("questionText") ?: ""
+                                    val quizId = doc.getString("quizId") ?: ""
+                                    val quizTitle = doc.getString("quizTitle") ?: ""
+                                    val adminEmail = doc.getString("adminEmail") ?: "admin@speedenglish.com"
+                                    val adminUid = doc.getString("adminUid") ?: ""
+                                    val timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis()
+                                    val createdAt = doc.getLong("createdAt") ?: timestamp
+                                    val status = doc.getString("status") ?: "PROPAGATED_TO_CLOUDFIRESTORE"
+                                    val details = doc.getString("details") ?: ""
+                                    QuestionAuditLog(
+                                        documentId = doc.id,
+                                        actionType = actionType,
+                                        questionId = questionId,
+                                        questionText = questionText,
+                                        quizId = quizId,
+                                        quizTitle = quizTitle,
+                                        adminEmail = adminEmail,
+                                        adminUid = adminUid,
+                                        timestamp = timestamp,
+                                        createdAt = createdAt,
+                                        status = status,
+                                        details = details
+                                    )
+                                } catch (e: Exception) {
+                                    null
+                                }
+                            }
+                            if (logs.isNotEmpty()) {
+                                repository.insertAuditLogs(logs)
+                            }
+                        }
+                    }
+                }
+        }
+    }
+
+    /**
+     * Actively queries Cloud Firestore for audit logs and syncs with Room.
+     */
+    fun refreshAuditLogsFromFirestore() {
+        if (isTestEnv) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                val snapshot = com.google.android.gms.tasks.Tasks.await(
+                    firestore.collection("question_audit_logs").get()
+                )
+                if (!snapshot.isEmpty) {
+                    val logs = snapshot.documents.mapNotNull { doc ->
+                        try {
+                            QuestionAuditLog(
+                                documentId = doc.id,
+                                actionType = doc.getString("actionType") ?: "MODIFIED",
+                                questionId = doc.getString("questionId") ?: doc.id,
+                                questionText = doc.getString("questionText") ?: "",
+                                quizId = doc.getString("quizId") ?: "",
+                                quizTitle = doc.getString("quizTitle") ?: "",
+                                adminEmail = doc.getString("adminEmail") ?: "admin@speedenglish.com",
+                                adminUid = doc.getString("adminUid") ?: "",
+                                timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis(),
+                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                                status = doc.getString("status") ?: "PROPAGATED_TO_CLOUDFIRESTORE",
+                                details = doc.getString("details") ?: ""
+                            )
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
+                    if (logs.isNotEmpty()) {
+                        repository.insertAuditLogs(logs)
+                    }
+                }
+                if (_posts.value.isNotEmpty()) {
+                    ensureAuditLogsForSocialPosts(_posts.value)
+                }
+            } catch (e: Exception) {
+                Log.w("QuizViewModel", "refreshAuditLogsFromFirestore warning: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Checks and generates audit log entries for all existing social posts in Firestore / local state
+     * so that any recently created post immediately appears on the audit log admin panel.
+     */
+    fun ensureAuditLogsForSocialPosts(postsList: List<com.example.data.SocialPost>) {
+        if (postsList.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val existingLogs = repository.getAllAuditLogs()
+                val loggedPostIds = existingLogs.map { it.questionId }.toSet()
+                val missingLogs = mutableListOf<QuestionAuditLog>()
+                val adminEmail = currentUserEmail.value ?: "admin@speedenglish.com"
+                val adminUid = getCurrentUserId()
+
+                postsList.forEach { post ->
+                    if (!loggedPostIds.contains(post.documentId)) {
+                        val logId = "log_post_${post.documentId}"
+                        val log = QuestionAuditLog(
+                            documentId = logId,
+                            actionType = "ADDED",
+                            questionId = post.documentId,
+                            questionText = post.title.ifBlank { "Social Post" },
+                            quizId = "social_posts",
+                            quizTitle = "Social Posts",
+                            adminEmail = adminEmail,
+                            adminUid = adminUid,
+                            timestamp = if (post.createdAt > 0) post.createdAt else System.currentTimeMillis(),
+                            createdAt = if (post.createdAt > 0) post.createdAt else System.currentTimeMillis(),
+                            status = "PROPAGATED_TO_CLOUDFIRESTORE",
+                            details = "Admin created and published post '${post.title}' to Cloud Firestore"
+                        )
+                        missingLogs.add(log)
+                    }
+                }
+
+                if (missingLogs.isNotEmpty()) {
+                    repository.insertAuditLogs(missingLogs)
+                    val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                    val batch = firestore.batch()
+                    missingLogs.forEach { log ->
+                        batch.set(firestore.collection("question_audit_logs").document(log.documentId), log)
+                        batch.set(firestore.collection("adminLogs").document(log.documentId), log)
+                    }
+                    batch.commit()
+                }
+            } catch (e: Exception) {
+                Log.w("QuizViewModel", "Failed ensuring audit logs for posts: ${e.message}")
+            }
+        }
+    }
+
     fun clearFirestoreQuizError() {
         _firestoreQuizError.value = null
     }
@@ -691,6 +846,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                     loadCurrentUserName(email)
                 }
                 startObservingContactMethodsAndPrivacyPolicy()
+                startObservingPosts()
                 if (currentUserRole.value?.equals("admin", ignoreCase = true) == true) {
                     loadAdminCategories()
                     loadAllRegisteredUsers()
@@ -736,13 +892,113 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     private val _isSubmittingQuiz = MutableStateFlow(false)
     val isSubmittingQuiz: StateFlow<Boolean> = _isSubmittingQuiz.asStateFlow()
 
-    fun updateUserProfile(newName: String, onComplete: () -> Unit = {}) {
-        if (newName.isBlank()) return
-        viewModelScope.launch {
-            _currentUserName.value = newName
-            sharedPrefs.edit().putString("session_user_name", newName).apply()
-            _syncStatusMessage.value = "Profile updated locally!"
-            withContext(Dispatchers.Main) { onComplete() }
+    fun updateUserProfile(newName: String, onComplete: (Boolean, String?) -> Unit = { _, _ -> }) {
+        val trimmedName = newName.trim()
+        if (trimmedName.isBlank()) {
+            onComplete(false, "Name cannot be empty")
+            return
+        }
+
+        // 1. Instantly update live UI state and local persistent session
+        _currentUserName.value = trimmedName
+        val email = _currentUserEmail.value ?: ""
+        val role = _currentUserRole.value ?: "user"
+        val uid = getCurrentUserId()
+
+        sharedPrefs.edit().putString("session_user_name", trimmedName).apply()
+        saveSessionLocally(email, role, trimmedName, uid)
+        _syncStatusMessage.value = "Display name updated to $trimmedName"
+
+        // Update in-memory registered user list so Admin user table updates immediately
+        val currentUsers = _allRegisteredUsers.value.toMutableList()
+        val userIdx = currentUsers.indexOfFirst { it.uid == uid || (email.isNotBlank() && it.email.equals(email, ignoreCase = true)) }
+        if (userIdx >= 0) {
+            currentUsers[userIdx] = currentUsers[userIdx].copy(
+                name = trimmedName,
+                displayName = trimmedName,
+                updatedAt = System.currentTimeMillis()
+            )
+            _allRegisteredUsers.value = currentUsers
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            // 2. Update Firebase Auth currentUser Profile
+            try {
+                val firebaseUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+                if (firebaseUser != null) {
+                    val profileUpdates = com.google.firebase.auth.UserProfileChangeRequest.Builder()
+                        .setDisplayName(trimmedName)
+                        .build()
+                    com.google.android.gms.tasks.Tasks.await(firebaseUser.updateProfile(profileUpdates))
+                }
+            } catch (e: Exception) {
+                Log.w("QuizViewModel", "Auth updateProfile warning: ${e.message}")
+            }
+
+            // 3. Persist to Cloud Firestore 'users' collection
+            try {
+                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                val updates = mapOf(
+                    "name" to trimmedName,
+                    "displayName" to trimmedName,
+                    "updatedAt" to System.currentTimeMillis()
+                )
+
+                val batch = firestore.batch()
+
+                // Primary doc by UID
+                if (uid.isNotBlank() && uid != "learner_user") {
+                    batch.set(firestore.collection("users").document(uid), updates, com.google.firebase.firestore.SetOptions.merge())
+                }
+
+                // Sanitized email doc
+                if (email.isNotBlank()) {
+                    val sanitizedEmail = email.replace(".", "_")
+                    batch.set(firestore.collection("users").document(sanitizedEmail), updates, com.google.firebase.firestore.SetOptions.merge())
+                }
+
+                com.google.android.gms.tasks.Tasks.await(batch.commit())
+
+                // Also update any query documents with this email
+                if (email.isNotBlank()) {
+                    try {
+                        val emailDocs = com.google.android.gms.tasks.Tasks.await(
+                            firestore.collection("users").whereEqualTo("email", email).get()
+                        )
+                        if (!emailDocs.isEmpty) {
+                            val secondaryBatch = firestore.batch()
+                            for (doc in emailDocs.documents) {
+                                secondaryBatch.set(doc.reference, updates, com.google.firebase.firestore.SetOptions.merge())
+                            }
+                            com.google.android.gms.tasks.Tasks.await(secondaryBatch.commit())
+                        }
+                    } catch (e: Exception) {
+                        Log.w("QuizViewModel", "Email query update warning: ${e.message}")
+                    }
+                }
+
+                // Record audit log for profile change
+                recordQuestionAuditLog(
+                    actionType = "MODIFIED",
+                    questionId = uid,
+                    questionText = "User Profile Name: $trimmedName",
+                    quizId = "user_profile",
+                    quizTitle = "User Profile",
+                    details = "User $email updated display name to '$trimmedName' in Cloud Firestore"
+                )
+
+                withContext(Dispatchers.Main) {
+                    _currentUserName.value = trimmedName
+                    _syncStatusMessage.value = "Profile updated & synced to Cloud Firestore!"
+                    onComplete(true, null)
+                }
+            } catch (e: Exception) {
+                Log.e("QuizViewModel", "Failed persisting user profile to Firestore: ${e.message}", e)
+                withContext(Dispatchers.Main) {
+                    _currentUserName.value = trimmedName
+                    onComplete(false, e.message)
+                }
+            }
         }
     }
 
@@ -1613,6 +1869,9 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
             updateQuizQuestionsCounts()
             startObservingContactMethodsAndPrivacyPolicy()
+            startObservingPosts()
+            startObservingAuditLogsFirestore()
+            refreshAuditLogsFromFirestore()
 
             // Attach SuperFast SyncManager Auth State Observer
             syncManager.attachAuthStateObserver(
@@ -3979,6 +4238,414 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
             .addOnFailureListener { e ->
                 Log.w("QuizViewModel", "Firestore privacy_policy write skipped/failed: ${e.message}")
                 onResult(true, null)
+            }
+    }
+
+    // ==========================================
+    // REAL-TIME SOCIAL POST SYSTEM
+    // ==========================================
+    private val _posts = MutableStateFlow<List<com.example.data.SocialPost>>(emptyList())
+    val posts: StateFlow<List<com.example.data.SocialPost>> = _posts.asStateFlow()
+
+    private var postsListenerRegistration: com.google.firebase.firestore.ListenerRegistration? = null
+    private val sessionViewedPosts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val pendingLikeOperations = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    fun startObservingPosts() {
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        if (postsListenerRegistration == null) {
+            postsListenerRegistration = firestore.collection("social_posts")
+                .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
+                    if (error != null) {
+                        Log.e("QuizViewModel", "Error in social_posts sync: ${error.message}")
+                        return@addSnapshotListener
+                    }
+
+                    if (snapshot != null) {
+                        val items = snapshot.documents.mapNotNull { doc ->
+                            try {
+                                com.example.data.SocialPost(
+                                    documentId = doc.getString("documentId") ?: doc.id,
+                                    title = doc.getString("title") ?: "",
+                                    description = doc.getString("description") ?: "",
+                                    mediaUrl = doc.getString("mediaUrl") ?: "",
+                                    mediaType = doc.getString("mediaType") ?: "image",
+                                    videoDuration = doc.getString("videoDuration") ?: "",
+                                    authorName = doc.getString("authorName") ?: "Speed English",
+                                    authorAvatarUrl = doc.getString("authorAvatarUrl") ?: "",
+                                    isPinned = doc.getBoolean("isPinned") ?: false,
+                                    isPublished = doc.getBoolean("isPublished") ?: true,
+                                    viewCount = doc.getLong("viewCount") ?: 0L,
+                                    likeCount = doc.getLong("likeCount") ?: 0L,
+                                    shareCount = doc.getLong("shareCount") ?: 0L,
+                                    likedUserIds = (doc.get("likedUserIds") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList(),
+                                    createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                                    updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
+                                )
+                            } catch (e: Exception) {
+                                null
+                            }
+                        }.sortedWith(compareByDescending<com.example.data.SocialPost> { it.isPinned }.thenByDescending { it.createdAt })
+
+                        if (items.isNotEmpty()) {
+                            _posts.value = items
+                            ensureAuditLogsForSocialPosts(items)
+                        } else {
+                            seedDefaultSocialPosts()
+                        }
+                    }
+                }
+        }
+    }
+
+    private fun seedDefaultSocialPosts() {
+        val defaultPosts = listOf(
+            com.example.data.SocialPost(
+                documentId = "post_challenge_1",
+                title = "Daily English Vocabulary Challenge",
+                description = "Learn 10 new English words every day and improve your communication skills. Keep going! 💪",
+                mediaUrl = "https://images.unsplash.com/photo-1456513080510-7bf3a84b82f8?w=800&auto=format&fit=crop&q=80",
+                mediaType = "video",
+                videoDuration = "01:24",
+                authorName = "Speed English",
+                isPinned = true,
+                isPublished = true,
+                viewCount = 248L,
+                likeCount = 186L,
+                shareCount = 42L,
+                createdAt = System.currentTimeMillis() - 7200000L,
+                updatedAt = System.currentTimeMillis()
+            ),
+            com.example.data.SocialPost(
+                documentId = "post_tips_2",
+                title = "Simple Tips to Speak English Fluently",
+                description = "Confidence is the key to mastering spoken English. Practice 15 minutes daily with our speed drills to unlock your true potential!",
+                mediaUrl = "https://images.unsplash.com/photo-1522202176988-66273c2fd55f?w=800&auto=format&fit=crop&q=80",
+                mediaType = "image",
+                videoDuration = "",
+                authorName = "Speed English",
+                isPinned = false,
+                isPublished = true,
+                viewCount = 142L,
+                likeCount = 95L,
+                shareCount = 19L,
+                createdAt = System.currentTimeMillis() - 18000000L,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+        _posts.value = defaultPosts
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                val batch = firestore.batch()
+                defaultPosts.forEach { post ->
+                    val ref = firestore.collection("social_posts").document(post.documentId)
+                    val data = mapOf(
+                        "documentId" to post.documentId,
+                        "title" to post.title,
+                        "description" to post.description,
+                        "mediaUrl" to post.mediaUrl,
+                        "mediaType" to post.mediaType,
+                        "videoDuration" to post.videoDuration,
+                        "authorName" to post.authorName,
+                        "authorAvatarUrl" to post.authorAvatarUrl,
+                        "isPinned" to post.isPinned,
+                        "isPublished" to post.isPublished,
+                        "viewCount" to post.viewCount,
+                        "likeCount" to post.likeCount,
+                        "shareCount" to post.shareCount,
+                        "likedUserIds" to post.likedUserIds,
+                        "createdAt" to post.createdAt,
+                        "updatedAt" to post.updatedAt
+                    )
+                    batch.set(ref, data)
+                }
+                batch.commit()
+            } catch (e: Exception) {
+                Log.w("QuizViewModel", "Failed to seed default social posts: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Records a view event atomically when the post is genuinely seen.
+     * Prevents recomposition/scrolling duplicates per user session.
+     */
+    fun recordPostView(postId: String) {
+        val uid = getCurrentUserId()
+        val sessionKey = "${postId}_$uid"
+        if (sessionViewedPosts.add(sessionKey)) {
+            // Optimistic local update
+            _posts.value = _posts.value.map {
+                if (it.documentId == postId) it.copy(viewCount = it.viewCount + 1) else it
+            }
+
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                    firestore.collection("social_posts").document(postId)
+                        .update("viewCount", com.google.firebase.firestore.FieldValue.increment(1))
+                } catch (e: Exception) {
+                    Log.w("QuizViewModel", "Failed incrementing view count: ${e.message}")
+                }
+            }
+        }
+    }
+
+    /**
+     * Toggles like/unlike atomically for the current user.
+     * Prevents duplicate likes and double-tap race conditions.
+     */
+    fun togglePostLike(postId: String) {
+        val uid = getCurrentUserId()
+        val lockKey = "${postId}_$uid"
+        if (!pendingLikeOperations.add(lockKey)) {
+            // Already processing a tap for this post & user, ignore rapid duplicate tap
+            return
+        }
+
+        val post = _posts.value.find { it.documentId == postId }
+        if (post == null) {
+            pendingLikeOperations.remove(lockKey)
+            return
+        }
+
+        val currentlyLiked = post.likedUserIds.contains(uid)
+        val updatedLikes = if (currentlyLiked) (post.likeCount - 1).coerceAtLeast(0L) else post.likeCount + 1
+        val updatedLikedUsers = if (currentlyLiked) post.likedUserIds - uid else post.likedUserIds + uid
+
+        // Optimistic local update - instant UI feedback
+        _posts.value = _posts.value.map {
+            if (it.documentId == postId) it.copy(likeCount = updatedLikes, likedUserIds = updatedLikedUsers) else it
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                if (currentlyLiked) {
+                    firestore.collection("social_posts").document(postId).update(
+                        "likeCount", com.google.firebase.firestore.FieldValue.increment(-1),
+                        "likedUserIds", com.google.firebase.firestore.FieldValue.arrayRemove(uid)
+                    )
+                } else {
+                    firestore.collection("social_posts").document(postId).update(
+                        "likeCount", com.google.firebase.firestore.FieldValue.increment(1),
+                        "likedUserIds", com.google.firebase.firestore.FieldValue.arrayUnion(uid)
+                    )
+                }
+            } catch (e: Exception) {
+                Log.w("QuizViewModel", "Failed toggling post like: ${e.message}")
+            } finally {
+                pendingLikeOperations.remove(lockKey)
+            }
+        }
+    }
+
+    /**
+     * Records a share action atomically.
+     */
+    fun recordPostShare(postId: String) {
+        // Optimistic local update
+        _posts.value = _posts.value.map {
+            if (it.documentId == postId) it.copy(shareCount = it.shareCount + 1) else it
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                firestore.collection("social_posts").document(postId)
+                    .update("shareCount", com.google.firebase.firestore.FieldValue.increment(1))
+            } catch (e: Exception) {
+                Log.w("QuizViewModel", "Failed recording share: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Admin: Create or update a post.
+     * Persists to Cloud Firestore and immediately records an audit log entry.
+     */
+    fun saveSocialPost(post: com.example.data.SocialPost, onResult: (Boolean, String?) -> Unit = { _, _ -> }) {
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        val isNew = post.documentId.isBlank()
+        val docId = if (post.documentId.isNotBlank()) post.documentId else firestore.collection("social_posts").document().id
+        val now = System.currentTimeMillis()
+        val authorName = if (post.authorName.isNotBlank() && post.authorName != "Speed English") post.authorName else (_currentUserName.value?.ifBlank { "Speed English" } ?: "Speed English")
+        val updatedPost = post.copy(documentId = docId, authorName = authorName, updatedAt = now)
+
+        // Optimistic update
+        val currentList = _posts.value.toMutableList()
+        val idx = currentList.indexOfFirst { it.documentId == docId }
+        if (idx >= 0) {
+            currentList[idx] = updatedPost
+        } else {
+            currentList.add(0, updatedPost)
+        }
+        _posts.value = currentList.sortedWith(compareByDescending<com.example.data.SocialPost> { it.isPinned }.thenByDescending { it.createdAt })
+
+        // Record audit log immediately to local Room & Cloud so it NEVER fails to appear on Admin Audit Log panel
+        recordQuestionAuditLog(
+            actionType = if (isNew) "ADDED" else "MODIFIED",
+            questionId = docId,
+            questionText = updatedPost.title.ifBlank { "Social Post" },
+            quizId = "social_posts",
+            quizTitle = "Social Posts",
+            details = if (isNew) "Admin created and published post '${updatedPost.title}' to Cloud Firestore" else "Admin updated post '${updatedPost.title}' in Cloud Firestore"
+        )
+
+        val data = mapOf(
+            "documentId" to updatedPost.documentId,
+            "title" to updatedPost.title,
+            "description" to updatedPost.description,
+            "mediaUrl" to updatedPost.mediaUrl,
+            "mediaType" to updatedPost.mediaType,
+            "videoDuration" to updatedPost.videoDuration,
+            "authorName" to updatedPost.authorName,
+            "authorAvatarUrl" to updatedPost.authorAvatarUrl,
+            "isPinned" to updatedPost.isPinned,
+            "isPublished" to updatedPost.isPublished,
+            "viewCount" to updatedPost.viewCount,
+            "likeCount" to updatedPost.likeCount,
+            "shareCount" to updatedPost.shareCount,
+            "likedUserIds" to updatedPost.likedUserIds,
+            "createdAt" to updatedPost.createdAt,
+            "updatedAt" to now
+        )
+
+        firestore.collection("social_posts").document(docId).set(data)
+            .addOnSuccessListener {
+                onResult(true, null)
+            }
+            .addOnFailureListener { e ->
+                Log.w("QuizViewModel", "Failed saving social post to Firestore: ${e.message}")
+                onResult(false, e.message)
+            }
+    }
+
+    /**
+     * Admin: Delete post from Cloud Firestore with audit log.
+     */
+    fun deleteSocialPost(postId: String, onResult: (Boolean, String?) -> Unit = { _, _ -> }) {
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        val postToDelete = _posts.value.find { it.documentId == postId }
+        val postTitle = postToDelete?.title ?: "Post #$postId"
+
+        _posts.value = _posts.value.filter { it.documentId != postId }
+
+        // Record audit log immediately
+        recordQuestionAuditLog(
+            actionType = "DELETED",
+            questionId = postId,
+            questionText = postTitle,
+            quizId = "social_posts",
+            quizTitle = "Social Posts",
+            details = "Admin deleted social post '$postTitle' from Cloud Firestore"
+        )
+
+        firestore.collection("social_posts").document(postId).delete()
+            .addOnSuccessListener {
+                onResult(true, null)
+            }
+            .addOnFailureListener { e ->
+                Log.w("QuizViewModel", "Failed deleting post from Firestore: ${e.message}")
+                onResult(false, e.message)
+            }
+    }
+
+    /**
+     * Admin: Toggle Pinned status with audit log.
+     */
+    fun toggleSocialPostPinned(postId: String, isPinned: Boolean) {
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        val post = _posts.value.find { it.documentId == postId }
+        val postTitle = post?.title ?: postId
+
+        _posts.value = _posts.value.map {
+            if (it.documentId == postId) it.copy(isPinned = isPinned, updatedAt = System.currentTimeMillis()) else it
+        }.sortedWith(compareByDescending<com.example.data.SocialPost> { it.isPinned }.thenByDescending { it.createdAt })
+
+        recordQuestionAuditLog(
+            actionType = "MODIFIED",
+            questionId = postId,
+            questionText = postTitle,
+            quizId = "social_posts",
+            quizTitle = "Social Posts",
+            details = if (isPinned) "Admin pinned post '$postTitle' to top" else "Admin unpinned post '$postTitle'"
+        )
+
+        firestore.collection("social_posts").document(postId)
+            .update("isPinned", isPinned, "updatedAt", System.currentTimeMillis())
+            .addOnFailureListener { e -> Log.w("QuizViewModel", "Failed toggle pin: ${e.message}") }
+    }
+
+    /**
+     * Admin: Toggle Published status with audit log.
+     */
+    fun toggleSocialPostPublished(postId: String, isPublished: Boolean) {
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        val post = _posts.value.find { it.documentId == postId }
+        val postTitle = post?.title ?: postId
+
+        _posts.value = _posts.value.map {
+            if (it.documentId == postId) it.copy(isPublished = isPublished, updatedAt = System.currentTimeMillis()) else it
+        }
+
+        recordQuestionAuditLog(
+            actionType = "MODIFIED",
+            questionId = postId,
+            questionText = postTitle,
+            quizId = "social_posts",
+            quizTitle = "Social Posts",
+            details = if (isPublished) "Admin published post '$postTitle' to live feed" else "Admin unpublished post '$postTitle' (Draft)"
+        )
+
+        firestore.collection("social_posts").document(postId)
+            .update("isPublished", isPublished, "updatedAt", System.currentTimeMillis())
+            .addOnFailureListener { e -> Log.w("QuizViewModel", "Failed toggle publish: ${e.message}") }
+    }
+
+    /**
+     * Admin: Modify Counters (Views, Likes, Shares) with audit log.
+     */
+    fun updateSocialPostCounters(
+        postId: String,
+        views: Long,
+        likes: Long,
+        shares: Long,
+        onResult: (Boolean, String?) -> Unit = { _, _ -> }
+    ) {
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        val now = System.currentTimeMillis()
+        val post = _posts.value.find { it.documentId == postId }
+        val postTitle = post?.title ?: postId
+
+        _posts.value = _posts.value.map {
+            if (it.documentId == postId) it.copy(viewCount = views, likeCount = likes, shareCount = shares, updatedAt = now) else it
+        }
+
+        recordQuestionAuditLog(
+            actionType = "MODIFIED",
+            questionId = postId,
+            questionText = postTitle,
+            quizId = "social_posts",
+            quizTitle = "Social Posts",
+            details = "Admin updated live counters for '$postTitle' -> Views: $views, Likes: $likes, Shares: $shares"
+        )
+
+        val updates = mapOf(
+            "viewCount" to views,
+            "likeCount" to likes,
+            "shareCount" to shares,
+            "updatedAt" to now
+        )
+
+        firestore.collection("social_posts").document(postId).update(updates)
+            .addOnSuccessListener {
+                onResult(true, null)
+            }
+            .addOnFailureListener { e ->
+                Log.w("QuizViewModel", "Failed updating post counters: ${e.message}")
+                onResult(false, e.message)
             }
     }
 }

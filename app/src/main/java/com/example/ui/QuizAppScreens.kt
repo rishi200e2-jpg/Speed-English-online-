@@ -1184,11 +1184,23 @@ fun SplashScreen(viewModel: QuizViewModel) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(viewModel: QuizViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val currentUserRole by viewModel.currentUserRole.collectAsState()
     val isBlocked by viewModel.isCurrentUserBlocked.collectAsState()
     val isAdminUser = (currentUserRole?.equals("admin", ignoreCase = true) == true) && !isBlocked
     val canManageContent = isAdminUser
-    var activeTabState by varRemember { mutableStateOf(0) } // 0: Practice, 1: Progress, 2: Profile, 3: Admin
+    var activeTabState by varRemember { mutableStateOf(0) } // 0: Practice, 1: Progress, 2: Profile, 3: Post, 4: Admin
+
+    // Trigger Native Ad refresh ONLY on actual navigation to Practice (0), Progress (1), or Profile (2)
+    // Does NOT trigger for Post (3) or Manage (4) or on repeated clicks / scrolling / recomposition
+    LaunchedEffect(activeTabState) {
+        when (activeTabState) {
+            0 -> com.example.ads.NativeAdManager.refreshAdForPlacement(context, "practice_screen")
+            1 -> com.example.ads.NativeAdManager.refreshAdForPlacement(context, "progress_screen")
+            2 -> com.example.ads.NativeAdManager.refreshAdForPlacement(context, "profile_screen")
+            else -> { /* No refresh for Post or Manage */ }
+        }
+    }
 
     Scaffold(
         bottomBar = {
@@ -1202,8 +1214,8 @@ fun HomeScreen(viewModel: QuizViewModel) {
             ) {
                 Surface(
                     modifier = Modifier
-                        .fillMaxWidth(if (canManageContent) 0.92f else 0.85f)
-                        .widthIn(max = 460.dp),
+                        .fillMaxWidth(if (canManageContent) 0.98f else 0.92f)
+                        .widthIn(max = 500.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.98f),
                     shape = RoundedCornerShape(22.dp),
                     tonalElevation = 4.dp,
@@ -1219,7 +1231,7 @@ fun HomeScreen(viewModel: QuizViewModel) {
                             selected = activeTabState == 0,
                             onClick = { activeTabState = 0 },
                             icon = { Icon(Icons.Default.MenuBook, contentDescription = "Practice", modifier = Modifier.size(18.dp)) },
-                            label = { Text("Practice", fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold) },
+                            label = { Text("Practice", fontSize = 9.sp, fontWeight = FontWeight.SemiBold) },
                             alwaysShowLabel = true,
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = MaterialTheme.colorScheme.primary,
@@ -1233,7 +1245,7 @@ fun HomeScreen(viewModel: QuizViewModel) {
                             selected = activeTabState == 1,
                             onClick = { activeTabState = 1 },
                             icon = { Icon(Icons.Default.TrendingUp, contentDescription = "Progress", modifier = Modifier.size(18.dp)) },
-                            label = { Text("Progress", fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold) },
+                            label = { Text("Progress", fontSize = 9.sp, fontWeight = FontWeight.SemiBold) },
                             alwaysShowLabel = true,
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = MaterialTheme.colorScheme.primary,
@@ -1247,7 +1259,21 @@ fun HomeScreen(viewModel: QuizViewModel) {
                             selected = activeTabState == 2,
                             onClick = { activeTabState = 2 },
                             icon = { Icon(Icons.Default.Person, contentDescription = "Profile", modifier = Modifier.size(18.dp)) },
-                            label = { Text("Profile", fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold) },
+                            label = { Text("Profile", fontSize = 9.sp, fontWeight = FontWeight.SemiBold) },
+                            alwaysShowLabel = true,
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.primary,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                indicatorColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                            )
+                        )
+                        NavigationBarItem(
+                            selected = activeTabState == 3,
+                            onClick = { activeTabState = 3 },
+                            icon = { Icon(Icons.Default.Article, contentDescription = "Post", modifier = Modifier.size(18.dp)) },
+                            label = { Text("Post", fontSize = 9.sp, fontWeight = FontWeight.SemiBold) },
                             alwaysShowLabel = true,
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = MaterialTheme.colorScheme.primary,
@@ -1259,10 +1285,10 @@ fun HomeScreen(viewModel: QuizViewModel) {
                         )
                         if (canManageContent) {
                             NavigationBarItem(
-                                selected = activeTabState == 3,
-                                onClick = { activeTabState = 3 },
+                                selected = activeTabState == 4,
+                                onClick = { activeTabState = 4 },
                                 icon = { Icon(Icons.Default.Settings, contentDescription = "Manage", modifier = Modifier.size(18.dp)) },
-                                label = { Text("Manage", fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold) },
+                                label = { Text("Manage", fontSize = 9.sp, fontWeight = FontWeight.SemiBold) },
                                 alwaysShowLabel = true,
                                 colors = NavigationBarItemDefaults.colors(
                                     selectedIconColor = MaterialTheme.colorScheme.primary,
@@ -1291,10 +1317,11 @@ fun HomeScreen(viewModel: QuizViewModel) {
                     .widthIn(max = 850.dp)
             ) {
                 when (activeTabState) {
-                    0 -> PracticeTabContent(viewModel = viewModel, onNavigateToAdmin = { if (canManageContent) { activeTabState = if (currentUserRole?.equals("admin", ignoreCase = true) == true) 3 else 2 } })
+                    0 -> PracticeTabContent(viewModel = viewModel, onNavigateToAdmin = { if (canManageContent) { activeTabState = if (currentUserRole?.equals("admin", ignoreCase = true) == true) 4 else 2 } })
                     1 -> ProgressTabContent(viewModel = viewModel)
                     2 -> ProfileTabContent(viewModel = viewModel)
-                    3 -> if (canManageContent) AdminTabContent(viewModel = viewModel) else PracticeTabContent(viewModel = viewModel, onNavigateToAdmin = { })
+                    3 -> PostTabContent(viewModel = viewModel)
+                    4 -> if (canManageContent) AdminTabContent(viewModel = viewModel) else PracticeTabContent(viewModel = viewModel, onNavigateToAdmin = { })
                 }
             }
         }
@@ -2838,6 +2865,7 @@ fun ProfileTabContent(viewModel: QuizViewModel) {
     var showAboutDialog by varRemember { mutableStateOf(false) }
     var showAdminContactUsDialog by varRemember { mutableStateOf(false) }
     var showAdminPrivacyPolicyDialog by varRemember { mutableStateOf(false) }
+    var showAdminPostManagementDialog by varRemember { mutableStateOf(false) }
 
     // Calculate progress based on the selection
     val filteredAttempts = remember(attempts, progressTabState) {
@@ -3366,6 +3394,46 @@ fun ProfileTabContent(viewModel: QuizViewModel) {
                             modifier = Modifier.size(18.dp)
                         )
                     }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f))
+                            .clickable { showAdminPostManagementDialog = true }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.DynamicFeed,
+                                contentDescription = "Post Management",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Post Management",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                                Text(
+                                    text = "Create, edit, pin, unpublish & edit live counters",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                )
+                            }
+                        }
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Manage",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }
@@ -3423,34 +3491,91 @@ fun ProfileTabContent(viewModel: QuizViewModel) {
                 }
             )
         }
+        if (showAdminPostManagementDialog) {
+            AlertDialog(
+                onDismissRequest = { showAdminPostManagementDialog = false },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.DynamicFeed, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Post Management", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = MaterialTheme.colorScheme.primary)
+                    }
+                },
+                text = {
+                    Box(modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
+                        AdminPostManagementContent(viewModel = viewModel)
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = { showAdminPostManagementDialog = false }) {
+                        Text("Close")
+                    }
+                }
+            )
+        }
 
         if (showEditProfileDialog) {
+            var updatingProfile by remember { mutableStateOf(false) }
+            var editProfileError by remember { mutableStateOf<String?>(null) }
+
             AlertDialog(
-                onDismissRequest = { showEditProfileDialog = false },
+                onDismissRequest = { if (!updatingProfile) showEditProfileDialog = false },
                 title = { Text("Edit Display Name", fontWeight = FontWeight.Bold) },
                 text = {
-                    OutlinedTextField(
-                        value = newNameInput,
-                        onValueChange = { newNameInput = it },
-                        label = { Text("Display Name") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = newNameInput,
+                            onValueChange = { 
+                                newNameInput = it 
+                                editProfileError = null
+                            },
+                            label = { Text("Display Name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (editProfileError != null) {
+                            Text(
+                                text = editProfileError ?: "",
+                                color = MaterialTheme.colorScheme.error,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
                 },
                 confirmButton = {
                     Button(
                         onClick = {
                             if (newNameInput.isNotBlank()) {
-                                viewModel.updateUserProfile(newNameInput)
-                                showEditProfileDialog = false
+                                updatingProfile = true
+                                editProfileError = null
+                                viewModel.updateUserProfile(newNameInput) { success, err ->
+                                    updatingProfile = false
+                                    if (success) {
+                                        showEditProfileDialog = false
+                                    } else {
+                                        editProfileError = err ?: "Failed to sync to Cloud Firestore"
+                                    }
+                                }
                             }
-                        }
+                        },
+                        enabled = !updatingProfile && newNameInput.isNotBlank()
                     ) {
+                        if (updatingProfile) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
                         Text("Save Profile")
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { showEditProfileDialog = false }) {
+                    TextButton(
+                        onClick = { showEditProfileDialog = false },
+                        enabled = !updatingProfile
+                    ) {
                         Text("Cancel")
                     }
                 }
@@ -6306,7 +6431,8 @@ fun AdminDashboardScreen(viewModel: QuizViewModel, initiallyVerified: Boolean = 
                             Triple(4, "Audit Log", Icons.Default.ReceiptLong),
                             Triple(5, "Users", Icons.Default.People),
                             Triple(6, "Contact Us", Icons.Default.SupportAgent),
-                            Triple(7, "Privacy Policy", Icons.Default.PrivacyTip)
+                            Triple(7, "Privacy Policy", Icons.Default.PrivacyTip),
+                            Triple(8, "Post", Icons.Default.DynamicFeed)
                         )
                         tabs.forEach { (index, label, icon) ->
                             val isSelected = selectedTab == index
@@ -8127,6 +8253,9 @@ fun AdminDashboardScreen(viewModel: QuizViewModel, initiallyVerified: Boolean = 
                     7 -> {
                         AdminPrivacyPolicyManagementContent(viewModel = viewModel)
                     }
+                    8 -> {
+                        AdminPostManagementContent(viewModel = viewModel)
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -9136,6 +9265,11 @@ fun AdminAuditLogContent(
     viewModel: QuizViewModel,
     modifier: Modifier = Modifier
 ) {
+    LaunchedEffect(Unit) {
+        viewModel.startObservingAuditLogsFirestore()
+        viewModel.refreshAuditLogsFromFirestore()
+    }
+
     val auditLogs by viewModel.auditLogs.collectAsState()
     var searchQuery by remember { mutableStateOf("") }
     var selectedActionFilter by remember { mutableStateOf("ALL") }
@@ -9250,6 +9384,17 @@ fun AdminAuditLogContent(
                 singleLine = true,
                 shape = RoundedCornerShape(10.dp)
             )
+
+            IconButton(
+                onClick = { viewModel.refreshAuditLogsFromFirestore() },
+                modifier = Modifier.testTag("refresh_audit_logs_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = "Sync Audit Logs from Cloud",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
 
             if (auditLogs.isNotEmpty()) {
                 IconButton(
@@ -9501,8 +9646,13 @@ fun AuditLogItemCard(
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                     shape = RoundedCornerShape(4.dp)
                 ) {
+                    val prefix = when {
+                        log.quizId == "social_posts" || log.quizTitle.contains("post", ignoreCase = true) -> "Post"
+                        log.quizId == "user_profile" -> "Profile"
+                        else -> "Quiz"
+                    }
                     Text(
-                        text = "Quiz: ${log.quizTitle}",
+                        text = "$prefix: ${log.quizTitle}",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

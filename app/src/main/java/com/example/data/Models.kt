@@ -97,8 +97,8 @@ data class LiveProgressData(
 
 @Entity(tableName = "question_audit_logs")
 data class QuestionAuditLog(
-    @PrimaryKey val documentId: String,
-    val actionType: String, // "ADDED", "MODIFIED", "DELETED"
+    @PrimaryKey val documentId: String = "",
+    val actionType: String = "MODIFIED", // "ADDED", "MODIFIED", "DELETED"
     val questionId: String = "",
     val questionText: String = "",
     val quizId: String = "",
@@ -161,5 +161,24 @@ data class PrivacyPolicyData(
             "We do not sell or trade your personal information to any third parties. All cloud communication is secured via Firebase Cloud Firestore encrypted connections.\n\n" +
             "4. Contact Us:\n" +
             "If you have questions regarding this Privacy Policy, please reach out via our official Contact Us channels.",
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+data class SocialPost(
+    val documentId: String = "",
+    val title: String = "",
+    val description: String = "",
+    val mediaUrl: String = "",
+    val mediaType: String = "image", // "image" or "video"
+    val videoDuration: String = "", // e.g. "01:24" for video badge
+    val authorName: String = "Speed English",
+    val authorAvatarUrl: String = "",
+    val isPinned: Boolean = false,
+    val isPublished: Boolean = true,
+    val viewCount: Long = 0L,
+    val likeCount: Long = 0L,
+    val shareCount: Long = 0L,
+    val likedUserIds: List<String> = emptyList(),
+    val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 )

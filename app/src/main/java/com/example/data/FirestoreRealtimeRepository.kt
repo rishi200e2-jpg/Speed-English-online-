@@ -249,4 +249,52 @@ class FirestoreRealtimeRepository(
                 .await()
         }
     }
+
+    /**
+     * Real-time stream of all Social Posts from Firestore collection 'social_posts'
+     */
+    fun getSocialPostsRealtime(): Flow<List<SocialPost>> = callbackFlow {
+        val subscription = firestore.collection("social_posts")
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    Log.e(TAG, "Error listening to social_posts: ${error.message}", error)
+                    close(error)
+                    return@addSnapshotListener
+                }
+
+                if (snapshot != null) {
+                    val posts = snapshot.documents.mapNotNull { doc ->
+                        try {
+                            SocialPost(
+                                documentId = doc.getString("documentId") ?: doc.id,
+                                title = doc.getString("title") ?: "",
+                                description = doc.getString("description") ?: "",
+                                mediaUrl = doc.getString("mediaUrl") ?: "",
+                                mediaType = doc.getString("mediaType") ?: "image",
+                                videoDuration = doc.getString("videoDuration") ?: "",
+                                authorName = doc.getString("authorName") ?: "Speed English",
+                                authorAvatarUrl = doc.getString("authorAvatarUrl") ?: "",
+                                isPinned = doc.getBoolean("isPinned") ?: false,
+                                isPublished = doc.getBoolean("isPublished") ?: true,
+                                viewCount = doc.getLong("viewCount") ?: 0L,
+                                likeCount = doc.getLong("likeCount") ?: 0L,
+                                shareCount = doc.getLong("shareCount") ?: 0L,
+                                likedUserIds = (doc.get("likedUserIds") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList(),
+                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                                updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
+                            )
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to parse SocialPost doc ${doc.id}", e)
+                            null
+                        }
+                    }.sortedWith(compareByDescending<SocialPost> { it.isPinned }.thenByDescending { it.createdAt })
+                    trySend(posts)
+                }
+            }
+
+        awaitClose {
+            Log.d(TAG, "Closing social_posts snapshot listener")
+            subscription.remove()
+        }
+    }
 }
