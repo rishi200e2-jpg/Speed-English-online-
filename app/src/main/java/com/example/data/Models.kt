@@ -82,6 +82,7 @@ data class QuizAttempt(
     val quizVersion: Int = 1,
     val correctCount: Int = 0,
     val wrongCount: Int = 0,
+    val timeTakenSeconds: Float = 0f,
     val createdAt: Long = System.currentTimeMillis()
 )
 

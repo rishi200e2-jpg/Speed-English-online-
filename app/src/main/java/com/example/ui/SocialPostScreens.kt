@@ -485,9 +485,23 @@ fun SocialPostCard(
                             .clickable { onMediaClick() },
                         contentAlignment = Alignment.Center
                     ) {
+                        val context = LocalContext.current
+                        val imageModel: Any = remember(post.mediaUrl) {
+                            if (post.mediaUrl.startsWith("data:image")) {
+                                try {
+                                    val base64Data = post.mediaUrl.substringAfter("base64,")
+                                    android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
+                                } catch (e: Exception) {
+                                    post.mediaUrl
+                                }
+                            } else {
+                                post.mediaUrl
+                            }
+                        }
+
                         AsyncImage(
-                            model = ImageRequest.Builder(LocalContext.current)
-                                .data(post.mediaUrl)
+                            model = ImageRequest.Builder(context)
+                                .data(imageModel)
                                 .crossfade(true)
                                 .diskCachePolicy(CachePolicy.ENABLED)
                                 .memoryCachePolicy(CachePolicy.ENABLED)
@@ -908,9 +922,23 @@ fun SocialMediaPreviewDialog(
                         },
                     contentAlignment = Alignment.Center
                 ) {
+                    val context = LocalContext.current
+                    val fullImageModel: Any = remember(post.mediaUrl) {
+                        if (post.mediaUrl.startsWith("data:image")) {
+                            try {
+                                val base64Data = post.mediaUrl.substringAfter("base64,")
+                                android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
+                            } catch (e: Exception) {
+                                post.mediaUrl
+                            }
+                        } else {
+                            post.mediaUrl
+                        }
+                    }
+
                     AsyncImage(
-                        model = ImageRequest.Builder(LocalContext.current)
-                            .data(post.mediaUrl)
+                        model = ImageRequest.Builder(context)
+                            .data(fullImageModel)
                             .crossfade(true)
                             .diskCachePolicy(CachePolicy.ENABLED)
                             .memoryCachePolicy(CachePolicy.ENABLED)

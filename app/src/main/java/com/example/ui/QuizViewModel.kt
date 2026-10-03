@@ -40,7 +40,8 @@ data class SavedQuizProgress(
     val quizScore: Float,
     val timeRemaining: Int,
     val questions: List<Question>,
-    val userAnswers: List<QuestionUserAnswer>
+    val userAnswers: List<QuestionUserAnswer>,
+    val quizStartTimeMillis: Long = 0L
 )
 
 data class SelectedFileMetadata(
@@ -58,7 +59,7 @@ sealed interface Screen {
     object Home : Screen
     data class CategoryView(val category: Category) : Screen
     data class ActiveQuiz(val quiz: Quiz) : Screen
-    data class Score(val quiz: Quiz, val score: Float, val totalQuestions: Int) : Screen
+    data class Score(val quiz: Quiz, val score: Float, val totalQuestions: Int, val timeTakenSeconds: Float = 0f) : Screen
     object AdminDashboard : Screen
 }
 
@@ -1815,6 +1816,10 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     val userQuestionsAnswersSession: StateFlow<List<QuestionUserAnswer>> = _userQuestionsAnswersSession.asStateFlow()
 
     private var questionStartTimeMillis: Long = 0L
+    private var quizStartTimeMillis: Long = 0L
+    private var quizEndTimeMillis: Long = 0L
+    private val _quizTimeTakenSeconds = MutableStateFlow<Float>(0f)
+    val quizTimeTakenSeconds: StateFlow<Float> = _quizTimeTakenSeconds.asStateFlow()
     private var timerJob: Job? = null
 
     // Admin State & Control
@@ -2595,7 +2600,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 quizScore = _quizScore.value,
                 timeRemaining = _timeRemaining.value,
                 questions = questionsList,
-                userAnswers = _userQuestionsAnswersSession.value
+                userAnswers = _userQuestionsAnswersSession.value,
+                quizStartTimeMillis = quizStartTimeMillis
             )
 
             withContext(Dispatchers.IO) {
@@ -2658,6 +2664,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
             _isQuizLoading.value = false
 
             if (_questions.value.isNotEmpty()) {
+                quizStartTimeMillis = if (progress.quizStartTimeMillis > 0L) progress.quizStartTimeMillis else System.currentTimeMillis()
                 questionStartTimeMillis = System.currentTimeMillis()
                 startTimer(progress.timeRemaining)
             } else {
@@ -2675,6 +2682,9 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         _isSubmittingQuiz.value = false
         _isQuizLoading.value = true
         _userQuestionsAnswersSession.value = emptyList()
+        quizStartTimeMillis = System.currentTimeMillis()
+        quizEndTimeMillis = 0L
+        _quizTimeTakenSeconds.value = 0f
         viewModelScope.launch(Dispatchers.IO) {
             val freshQuiz = repository.getQuizById(quiz.documentId) ?: quiz
 
@@ -2841,6 +2851,19 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         clearQuizProgress()
         saveQuizProgressToFirestore(isCompleted = true)
 
+        quizEndTimeMillis = System.currentTimeMillis()
+        val durationMillis = if (quizStartTimeMillis > 0L) (quizEndTimeMillis - quizStartTimeMillis) else 0L
+        val calculatedSeconds = if (durationMillis > 0L) (durationMillis / 1000f) else 0f
+        val sumFromAnswers = _userQuestionsAnswersSession.value.sumOf { it.timeSpentSeconds.toDouble() }.toFloat()
+        val finalTimeTakenSeconds = if (calculatedSeconds >= 0.5f) {
+            calculatedSeconds
+        } else if (sumFromAnswers >= 0.5f) {
+            sumFromAnswers
+        } else {
+            1.0f
+        }
+        _quizTimeTakenSeconds.value = finalTimeTakenSeconds
+
         val finalScore = _quizScore.value
         val finalTotal = activeQuestions.size
         val correctAnsCount = _userQuestionsAnswersSession.value.count { it.isCorrect }
@@ -2864,18 +2887,19 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                     quizDocumentId = currentQuiz.documentId,
                     quizVersion = currentQuiz.version,
                     correctCount = correctAnsCount,
-                    wrongCount = wrongAnsCount
+                    wrongCount = wrongAnsCount,
+                    timeTakenSeconds = finalTimeTakenSeconds
                 )
 
                 saveAttemptToFirestoreAndDatabase(attemptObj)
 
                 withContext(Dispatchers.Main) {
-                    navigateTo(Screen.Score(currentQuiz, finalScore, finalTotal), clearBackstack = true)
+                    navigateTo(Screen.Score(currentQuiz, finalScore, finalTotal, finalTimeTakenSeconds), clearBackstack = true)
                 }
             } catch (e: Exception) {
                 Log.e("QuizViewModel", "Error saving attempt on timer expired: ${e.message}", e)
                 withContext(Dispatchers.Main) {
-                    navigateTo(Screen.Score(currentQuiz, finalScore, finalTotal), clearBackstack = true)
+                    navigateTo(Screen.Score(currentQuiz, finalScore, finalTotal, finalTimeTakenSeconds), clearBackstack = true)
                 }
             }
         }
@@ -2927,6 +2951,20 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 timerJob?.cancel()
                 clearQuizProgress()
                 saveQuizProgressToFirestore(isCompleted = true)
+
+                quizEndTimeMillis = System.currentTimeMillis()
+                val durationMillis = if (quizStartTimeMillis > 0L) (quizEndTimeMillis - quizStartTimeMillis) else 0L
+                val calculatedSeconds = if (durationMillis > 0L) (durationMillis / 1000f) else 0f
+                val sumFromAnswers = _userQuestionsAnswersSession.value.sumOf { it.timeSpentSeconds.toDouble() }.toFloat()
+                val finalTimeTakenSeconds = if (calculatedSeconds >= 0.5f) {
+                    calculatedSeconds
+                } else if (sumFromAnswers >= 0.5f) {
+                    sumFromAnswers
+                } else {
+                    1.0f
+                }
+                _quizTimeTakenSeconds.value = finalTimeTakenSeconds
+
                 val finalScore = _quizScore.value
                 val finalTotal = activeQuestions.size
                 val correctAnsCount = _userQuestionsAnswersSession.value.count { it.isCorrect }
@@ -2950,18 +2988,19 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                             quizDocumentId = currentQuiz.documentId,
                             quizVersion = currentQuiz.version,
                             correctCount = correctAnsCount,
-                            wrongCount = wrongAnsCount
+                            wrongCount = wrongAnsCount,
+                            timeTakenSeconds = finalTimeTakenSeconds
                         )
 
                         saveAttemptToFirestoreAndDatabase(attemptObj)
 
                         withContext(Dispatchers.Main) {
-                            navigateTo(Screen.Score(currentQuiz, finalScore, finalTotal), clearBackstack = true)
+                            navigateTo(Screen.Score(currentQuiz, finalScore, finalTotal, finalTimeTakenSeconds), clearBackstack = true)
                         }
                     } catch (e: Exception) {
                         Log.e("QuizViewModel", "Error saving attempt on advanceQuestion: ${e.message}", e)
                         withContext(Dispatchers.Main) {
-                            navigateTo(Screen.Score(currentQuiz, finalScore, finalTotal), clearBackstack = true)
+                            navigateTo(Screen.Score(currentQuiz, finalScore, finalTotal, finalTimeTakenSeconds), clearBackstack = true)
                         }
                     }
                 }

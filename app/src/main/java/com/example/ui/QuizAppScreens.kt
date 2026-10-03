@@ -5623,6 +5623,19 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                                 return@launch
                                             }
 
+                                            // Helper function to convert local Uri to Base64 data URL if Storage upload fails
+                                            fun uriToBase64DataUrl(ctx: android.content.Context, uri: android.net.Uri): String? {
+                                                return try {
+                                                    val inputStream = ctx.contentResolver.openInputStream(uri) ?: return null
+                                                    val bytes = inputStream.readBytes()
+                                                    inputStream.close()
+                                                    val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                                                    "data:image/jpeg;base64,$base64"
+                                                } catch (e: Exception) {
+                                                    null
+                                                }
+                                            }
+
                                             fun publishPost(mediaUrl: String) {
                                                 val currentUserName = viewModel.currentUserName.value?.ifBlank {
                                                     com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.displayName?.ifBlank { "Speed English Learner" } ?: "Speed English Learner"
@@ -5657,7 +5670,9 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                                 }
                                             }
 
-                                            // Try uploading to Firebase Storage or use file Uri directly
+                                            // Try uploading to Firebase Storage or use Base64 fallback (NEVER save local file URI)
+                                            val fallbackBase64 = uriToBase64DataUrl(context, imageUri) ?: ""
+
                                             try {
                                                 val storage = com.google.firebase.storage.FirebaseStorage.getInstance()
                                                 val ref = storage.reference.child("posts/${java.util.UUID.randomUUID()}_report.jpg")
@@ -5666,14 +5681,35 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                                         ref.downloadUrl.addOnSuccessListener { downloadUri ->
                                                             publishPost(downloadUri.toString())
                                                         }.addOnFailureListener {
-                                                            publishPost(imageUri.toString())
+                                                            if (fallbackBase64.isNotBlank()) {
+                                                                publishPost(fallbackBase64)
+                                                            } else {
+                                                                scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                                                                    isPosting = false
+                                                                    android.widget.Toast.makeText(context, "Failed to upload report image.", android.widget.Toast.LENGTH_LONG).show()
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                     .addOnFailureListener {
-                                                        publishPost(imageUri.toString())
+                                                        if (fallbackBase64.isNotBlank()) {
+                                                            publishPost(fallbackBase64)
+                                                        } else {
+                                                            scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                                                                isPosting = false
+                                                                android.widget.Toast.makeText(context, "Upload failed. Check connection.", android.widget.Toast.LENGTH_LONG).show()
+                                                            }
+                                                        }
                                                     }
                                             } catch (e: Exception) {
-                                                publishPost(imageUri.toString())
+                                                if (fallbackBase64.isNotBlank()) {
+                                                    publishPost(fallbackBase64)
+                                                } else {
+                                                    scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                                                        isPosting = false
+                                                        android.widget.Toast.makeText(context, "Upload error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                                                    }
+                                                }
                                             }
                                         }
                                     }
