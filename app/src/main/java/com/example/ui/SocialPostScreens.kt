@@ -21,8 +21,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -33,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
@@ -475,10 +480,10 @@ fun SocialPostCard(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 14.dp)
-                            .height(210.dp)
                             .clip(RoundedCornerShape(14.dp))
                             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                            .clickable { onMediaClick() }
+                            .clickable { onMediaClick() },
+                        contentAlignment = Alignment.Center
                     ) {
                         AsyncImage(
                             model = ImageRequest.Builder(LocalContext.current)
@@ -488,8 +493,10 @@ fun SocialPostCard(
                                 .memoryCachePolicy(CachePolicy.ENABLED)
                                 .build(),
                             contentDescription = post.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
+                            contentScale = ContentScale.FillWidth,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .wrapContentHeight()
                         )
                     }
                 }
@@ -819,68 +826,180 @@ fun SocialMediaPreviewDialog(
     post: SocialPost,
     onDismiss: () -> Unit
 ) {
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(14.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = post.title,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "Close")
+    val isVideo = post.mediaType.equals("video", ignoreCase = true)
+
+    if (isVideo) {
+        Dialog(onDismissRequest = onDismiss) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = post.title,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Default.Close, contentDescription = "Close")
+                        }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                if (post.mediaType.equals("video", ignoreCase = true)) {
                     PostVideoCardPlayer(
                         videoUrl = post.mediaUrl,
                         videoDuration = post.videoDuration,
                         modifier = Modifier.fillMaxWidth()
                     )
-                } else {
-                    Box(
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = post.description,
+                        fontSize = 13.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    } else {
+        // FULL-SCREEN IMAGE VIEWER WITH PINCH-TO-ZOOM & PAN
+        Dialog(
+            onDismissRequest = onDismiss,
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false
+            )
+        ) {
+            var scale by remember { mutableStateOf(1f) }
+            var offset by remember { mutableStateOf(Offset.Zero) }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+            ) {
+                // Main image viewport with pinch-to-zoom and pan gestures
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                scale = (scale * zoom).coerceIn(1f, 5f)
+                                if (scale > 1f) {
+                                    val extraWidth = (scale - 1f) * size.width / 2f
+                                    val extraHeight = (scale - 1f) * size.height / 2f
+                                    val newX = (offset.x + pan.x).coerceIn(-extraWidth, extraWidth)
+                                    val newY = (offset.y + pan.y).coerceIn(-extraHeight, extraHeight)
+                                    offset = Offset(newX, newY)
+                                } else {
+                                    offset = Offset.Zero
+                                }
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(post.mediaUrl)
+                            .crossfade(true)
+                            .diskCachePolicy(CachePolicy.ENABLED)
+                            .memoryCachePolicy(CachePolicy.ENABLED)
+                            .build(),
+                        contentDescription = post.title,
+                        contentScale = ContentScale.Fit,
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .height(260.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color.Black),
-                        contentAlignment = Alignment.Center
+                            .fillMaxSize()
+                            .graphicsLayer(
+                                scaleX = scale,
+                                scaleY = scale,
+                                translationX = offset.x,
+                                translationY = offset.y
+                            )
+                    )
+                }
+
+                // Top Control Bar: Title & Close Button
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(Color.Black.copy(alpha = 0.85f), Color.Transparent)
+                            )
+                        )
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = post.title.ifBlank { "Quiz Report Scorecard" },
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (post.authorName.isNotBlank()) {
+                            Text(
+                                text = "Posted by ${post.authorName}",
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.25f))
                     ) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(LocalContext.current)
-                                .data(post.mediaUrl)
-                                .crossfade(true)
-                                .diskCachePolicy(CachePolicy.ENABLED)
-                                .memoryCachePolicy(CachePolicy.ENABLED)
-                                .build(),
-                            contentDescription = post.title,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize()
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close Viewer",
+                            tint = Color.White
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    text = post.description,
-                    fontSize = 13.5.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                // Tap to Reset Zoom Pill
+                if (scale > 1.05f) {
+                    Surface(
+                        onClick = {
+                            scale = 1f
+                            offset = Offset.Zero
+                        },
+                        shape = RoundedCornerShape(20.dp),
+                        color = Color.Black.copy(alpha = 0.7f),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f)),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .navigationBarsPadding()
+                            .padding(bottom = 24.dp)
+                    ) {
+                        Text(
+                            text = "Reset Zoom (${String.format("%.1f", scale)}x)",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                    }
+                }
             }
         }
     }
