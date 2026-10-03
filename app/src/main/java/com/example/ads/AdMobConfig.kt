@@ -139,11 +139,9 @@ object AdMobConfig {
     fun initialize(context: Context) {
         try {
             val requestConfigBuilder = RequestConfiguration.Builder()
-            // Always register emulator device ID for testing
-            val testDevices = mutableListOf<String>(AdRequest.DEVICE_ID_EMULATOR)
-            val validTestDevices = TEST_DEVICE_IDS.filter { it.isNotBlank() && it != "YOUR_TEST_DEVICE_ID" }
-            testDevices.addAll(validTestDevices)
-            requestConfigBuilder.setTestDeviceIds(testDevices)
+            // Do NOT register test device IDs in RequestConfiguration to prevent the AdMob SDK
+            // from triggering the "AdMob native ad validator" popup overlay during native ad loading
+            requestConfigBuilder.setTestDeviceIds(emptyList())
             MobileAds.setRequestConfiguration(requestConfigBuilder.build())
 
             MobileAds.initialize(context) { status ->
