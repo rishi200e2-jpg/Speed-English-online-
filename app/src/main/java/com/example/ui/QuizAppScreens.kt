@@ -5599,7 +5599,7 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                     if (!isPosting) {
                                         isPosting = true
                                         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                                            val imageUri = generateQuizReportImage(
+                                            val reportImageUri = generateQuizReportImage(
                                                 context = context,
                                                 quiz = quiz,
                                                 categoryName = category?.name ?: "General",
@@ -5615,7 +5615,7 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                                 praiseText = praiseText
                                             )
 
-                                            if (imageUri == null) {
+                                            if (reportImageUri == null) {
                                                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                                                     isPosting = false
                                                     android.widget.Toast.makeText(context, "Could not generate report image.", android.widget.Toast.LENGTH_LONG).show()
@@ -5630,7 +5630,7 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                                     val bytes = inputStream.readBytes()
                                                     inputStream.close()
                                                     val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                                                    "data:image/jpeg;base64,$base64"
+                                                    "data:image/webp;base64,$base64"
                                                 } catch (e: Exception) {
                                                     null
                                                 }
@@ -5648,6 +5648,8 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                                     title = "$catName - ${quiz.title} Scorecard",
                                                     description = "I scored ${formatDecimal(score)} Marks ($percentage% Accuracy) in ${quiz.title}! 🚀 Check out my scorecard below!",
                                                     mediaUrl = mediaUrl,
+                                                    feedMediaUrl = mediaUrl,
+                                                    originalMediaUrl = "",
                                                     mediaType = "image",
                                                     authorName = currentUserName,
                                                     authorAvatarUrl = currentAvatar,
@@ -5662,7 +5664,6 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                                         isPosting = false
                                                         if (success) {
                                                             android.widget.Toast.makeText(context, "✓ Quiz Report posted successfully!", android.widget.Toast.LENGTH_LONG).show()
-                                                            viewModel.navigateTo(Screen.Home, clearBackstack = true)
                                                         } else {
                                                             android.widget.Toast.makeText(context, "Posting failed: ${err ?: "Unknown error"}", android.widget.Toast.LENGTH_LONG).show()
                                                         }
@@ -5670,19 +5671,20 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                                 }
                                             }
 
-                                            // Try uploading to Firebase Storage or use Base64 fallback (NEVER save local file URI)
-                                            val fallbackBase64 = uriToBase64DataUrl(context, imageUri) ?: ""
+                                            // Try uploading single ~40KB WebP image to Firebase Storage or use Base64 fallback (NEVER save local file URI)
+                                            val reportBase64 = uriToBase64DataUrl(context, reportImageUri) ?: ""
 
                                             try {
                                                 val storage = com.google.firebase.storage.FirebaseStorage.getInstance()
-                                                val ref = storage.reference.child("posts/${java.util.UUID.randomUUID()}_report.jpg")
-                                                ref.putFile(imageUri)
+                                                val uuid = java.util.UUID.randomUUID()
+                                                val postRef = storage.reference.child("posts/$uuid.webp")
+                                                postRef.putFile(reportImageUri)
                                                     .addOnSuccessListener {
-                                                        ref.downloadUrl.addOnSuccessListener { downloadUri ->
+                                                        postRef.downloadUrl.addOnSuccessListener { downloadUri ->
                                                             publishPost(downloadUri.toString())
                                                         }.addOnFailureListener {
-                                                            if (fallbackBase64.isNotBlank()) {
-                                                                publishPost(fallbackBase64)
+                                                            if (reportBase64.isNotBlank()) {
+                                                                publishPost(reportBase64)
                                                             } else {
                                                                 scope.launch(kotlinx.coroutines.Dispatchers.Main) {
                                                                     isPosting = false
@@ -5692,8 +5694,8 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                                         }
                                                     }
                                                     .addOnFailureListener {
-                                                        if (fallbackBase64.isNotBlank()) {
-                                                            publishPost(fallbackBase64)
+                                                        if (reportBase64.isNotBlank()) {
+                                                            publishPost(reportBase64)
                                                         } else {
                                                             scope.launch(kotlinx.coroutines.Dispatchers.Main) {
                                                                 isPosting = false
@@ -5702,8 +5704,8 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                                         }
                                                     }
                                             } catch (e: Exception) {
-                                                if (fallbackBase64.isNotBlank()) {
-                                                    publishPost(fallbackBase64)
+                                                if (reportBase64.isNotBlank()) {
+                                                    publishPost(reportBase64)
                                                 } else {
                                                     scope.launch(kotlinx.coroutines.Dispatchers.Main) {
                                                         isPosting = false
@@ -5768,6 +5770,62 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
 // REPORT IMAGE GENERATION HELPER
 // ==========================================
 
+/**
+ * Bitmap compression helper in the report-generation pipeline to target specific WebP file sizes.
+ */
+fun compressBitmapToWebpTargetSize(
+    bitmap: android.graphics.Bitmap,
+    outputFile: java.io.File,
+    targetSizeBytes: Long = 40 * 1024L, // ~40KB target
+    minSizeBytes: Long = 32 * 1024L,    // ~32KB min target
+    initialQuality: Int = 80
+): java.io.File {
+    val compressFormat = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+        android.graphics.Bitmap.CompressFormat.WEBP_LOSSY
+    } else {
+        @Suppress("DEPRECATION")
+        android.graphics.Bitmap.CompressFormat.WEBP
+    }
+
+    var quality = initialQuality
+    var fileLength: Long
+
+    // Initial compression pass
+    java.io.FileOutputStream(outputFile).use { out ->
+        bitmap.compress(compressFormat, quality, out)
+    }
+    fileLength = outputFile.length()
+
+    // Step down quality if file size exceeds target
+    while (fileLength > targetSizeBytes && quality > 12) {
+        quality -= 4
+        java.io.FileOutputStream(outputFile).use { out ->
+            bitmap.compress(compressFormat, quality, out)
+        }
+        fileLength = outputFile.length()
+    }
+
+    // Step up quality if file size is below min target to keep image near target range
+    while (fileLength < minSizeBytes && quality < 95) {
+        val testQuality = (quality + 4).coerceAtMost(98)
+        val tempFile = java.io.File(outputFile.parent, "temp_check_${outputFile.name}")
+        java.io.FileOutputStream(tempFile).use { out ->
+            bitmap.compress(compressFormat, testQuality, out)
+        }
+        if (tempFile.length() <= targetSizeBytes) {
+            tempFile.copyTo(outputFile, overwrite = true)
+            tempFile.delete()
+            fileLength = outputFile.length()
+            quality = testQuality
+        } else {
+            tempFile.delete()
+            break
+        }
+    }
+
+    return outputFile
+}
+
 fun generateQuizReportImage(
     context: android.content.Context,
     quiz: com.example.data.Quiz,
@@ -5784,8 +5842,9 @@ fun generateQuizReportImage(
     praiseText: String
 ): android.net.Uri? {
     try {
-        val width = 1080
-        val height = 1440
+        // 4:3 Aspect Ratio Source Canvas (960x720)
+        val width = 960
+        val height = 720
         val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(bitmap)
 
@@ -5800,72 +5859,81 @@ fun generateQuizReportImage(
             shader = bgShader
             isAntiAlias = true
         }
-        val cardBounds = android.graphics.RectF(12f, 12f, width - 12f, height - 12f)
-        canvas.drawRoundRect(cardBounds, 40f, 40f, bgPaint)
+        val cardBounds = android.graphics.RectF(10f, 10f, width - 10f, height - 10f)
+        canvas.drawRoundRect(cardBounds, 28f, 28f, bgPaint)
 
         // Outer Purple Border Frame
         val borderPaint = android.graphics.Paint().apply {
             color = android.graphics.Color.parseColor("#C084FC")
             style = android.graphics.Paint.Style.STROKE
-            strokeWidth = 6f
+            strokeWidth = 5f
             isAntiAlias = true
         }
-        canvas.drawRoundRect(cardBounds, 40f, 40f, borderPaint)
+        canvas.drawRoundRect(cardBounds, 28f, 28f, borderPaint)
 
-        val centerX = width / 2f
-        val marginX = 60f
-        val contentWidth = width - (marginX * 2f)
-        val contentLeft = marginX
-        val contentRight = width - marginX
+        // Left Column Geometry (Width = 395, CenterX = 232.5)
+        val leftLeft = 35f
+        val leftRight = 430f
+        val leftWidth = leftRight - leftLeft
+        val leftCenterX = leftLeft + (leftWidth / 2f)
 
-        // 2. Header Bar: Centered "Quiz Result" Title
+        // Right Column Geometry (Width = 470, Left = 455, Right = 925)
+        val rightLeft = 455f
+        val rightRight = 925f
+        val rightWidth = rightRight - rightLeft
+
+        // ==========================================
+        // LEFT COLUMN: Header, Score Donut, Scorecard
+        // ==========================================
+
+        // Header Title
         val headerTitlePaint = android.graphics.Paint().apply {
-            color = android.graphics.Color.parseColor("#4C1D95") // Deep Purple
-            textSize = 46f
+            color = android.graphics.Color.parseColor("#4C1D95")
+            textSize = 36f
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
             isAntiAlias = true
             textAlign = android.graphics.Paint.Align.CENTER
         }
-        canvas.drawText("Quiz Result", centerX, 95f, headerTitlePaint)
+        canvas.drawText("Quiz Result", leftCenterX, 58f, headerTitlePaint)
 
-        // 3. Category & Topic Subtitle
+        // Category Subtitle
         val displayCategory = if (categoryName.isBlank()) "English Grammar" else categoryName
         val categoryTextPaint = android.graphics.Paint().apply {
-            color = android.graphics.Color.parseColor("#4C1D95")
-            textSize = 40f
+            color = android.graphics.Color.parseColor("#6D28D9")
+            textSize = 28f
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
             isAntiAlias = true
             textAlign = android.graphics.Paint.Align.CENTER
         }
-        canvas.drawText(displayCategory, centerX, 160f, categoryTextPaint)
+        canvas.drawText(displayCategory, leftCenterX, 98f, categoryTextPaint)
 
         // Topic Pill Badge
-        val topicText = quiz.title.ifBlank { "Tense" }
+        val topicText = quiz.title.ifBlank { "English Test" }
         val topicTextPaint = android.graphics.Paint().apply {
             color = android.graphics.Color.WHITE
-            textSize = 24f
+            textSize = 18f
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
             isAntiAlias = true
             textAlign = android.graphics.Paint.Align.CENTER
         }
-        val topicPillWidth = topicTextPaint.measureText(topicText) + 64f
-        val pillRect = android.graphics.RectF(centerX - (topicPillWidth / 2f), 185f, centerX + (topicPillWidth / 2f), 235f)
+        val topicPillWidth = topicTextPaint.measureText(topicText) + 42f
+        val pillRect = android.graphics.RectF(leftCenterX - (topicPillWidth / 2f), 115f, leftCenterX + (topicPillWidth / 2f), 152f)
         val pillBgPaint = android.graphics.Paint().apply {
-            color = android.graphics.Color.parseColor("#7C3AED") // Pill Purple
+            color = android.graphics.Color.parseColor("#7C3AED")
             isAntiAlias = true
         }
-        canvas.drawRoundRect(pillRect, 25f, 24f, pillBgPaint)
-        canvas.drawText(topicText, centerX, 218f, topicTextPaint)
+        canvas.drawRoundRect(pillRect, 18f, 18f, pillBgPaint)
+        canvas.drawText(topicText, leftCenterX, 140f, topicTextPaint)
 
-        // 4. Hero Score Donut Circle Ring
-        val ringCenterX = centerX
-        val ringCenterY = 415f
-        val ringRadius = 135f
+        // Hero Score Donut Circle Ring
+        val ringCenterX = leftCenterX
+        val ringCenterY = 275f
+        val ringRadius = 90f
 
         val trackPaint = android.graphics.Paint().apply {
             color = android.graphics.Color.parseColor("#F1F5F9")
             style = android.graphics.Paint.Style.STROKE
-            strokeWidth = 28f
+            strokeWidth = 20f
             isAntiAlias = true
         }
         val ringBounds = android.graphics.RectF(
@@ -5881,16 +5949,16 @@ fun generateQuizReportImage(
         val progressShader = android.graphics.SweepGradient(
             ringCenterX, ringCenterY,
             intArrayOf(
-                android.graphics.Color.parseColor("#FF6B8B"), // Coral / Pink
-                android.graphics.Color.parseColor("#8B5CF6"), // Purple
-                android.graphics.Color.parseColor("#6D28D9")  // Deep Purple
+                android.graphics.Color.parseColor("#FF6B8B"),
+                android.graphics.Color.parseColor("#8B5CF6"),
+                android.graphics.Color.parseColor("#6D28D9")
             ),
             floatArrayOf(0f, 0.6f, 1f)
         )
         val progressPaint = android.graphics.Paint().apply {
             shader = progressShader
             style = android.graphics.Paint.Style.STROKE
-            strokeWidth = 30f
+            strokeWidth = 22f
             strokeCap = android.graphics.Paint.Cap.ROUND
             isAntiAlias = true
         }
@@ -5902,25 +5970,77 @@ fun generateQuizReportImage(
         // Inside Donut Text
         val scorePercentPaint = android.graphics.Paint().apply {
             color = android.graphics.Color.parseColor("#0F172A")
-            textSize = 76f
+            textSize = 54f
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
             isAntiAlias = true
             textAlign = android.graphics.Paint.Align.CENTER
         }
-        canvas.drawText("$percentage%", ringCenterX, ringCenterY + 20f, scorePercentPaint)
+        canvas.drawText("$percentage%", ringCenterX, ringCenterY + 15f, scorePercentPaint)
 
         val scoreLabelPaint = android.graphics.Paint().apply {
             color = android.graphics.Color.parseColor("#64748B")
-            textSize = 26f
+            textSize = 20f
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
             isAntiAlias = true
             textAlign = android.graphics.Paint.Align.CENTER
         }
-        canvas.drawText("Score", ringCenterX, ringCenterY + 62f, scoreLabelPaint)
+        canvas.drawText("Accuracy", ringCenterX, ringCenterY + 46f, scoreLabelPaint)
 
-        // 5. 3-Column Metrics Row 1 (Time Taken, Speed, Marks)
-        val yRow1 = 615f
-        val colWidth = contentWidth / 3f
+        // Clean Scorecard Summary Box (Reallocates space smoothly without motivational text or trophy)
+        val ySummary = 405f
+        val summaryBoxBg = android.graphics.Paint().apply {
+            color = android.graphics.Color.parseColor("#F5F3FF")
+            isAntiAlias = true
+        }
+        val summaryRect = android.graphics.RectF(leftLeft, ySummary, leftRight, ySummary + 275f)
+        canvas.drawRoundRect(summaryRect, 20f, 20f, summaryBoxBg)
+
+        val summaryTitlePaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.parseColor("#4C1D95")
+            textSize = 22f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+            isAntiAlias = true
+        }
+        canvas.drawText("★ Scorecard Summary", leftLeft + 25f, ySummary + 42f, summaryTitlePaint)
+
+        val posTextPaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.parseColor("#059669")
+            textSize = 20f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+            isAntiAlias = true
+        }
+        canvas.drawText("✓ Marks Earned: +${formatDecimal(positiveMarksEarned)}", leftLeft + 25f, ySummary + 95f, posTextPaint)
+
+        val negTextPaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.parseColor("#DC2626")
+            textSize = 20f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+            isAntiAlias = true
+        }
+        canvas.drawText("✕ Negative Deductions: -${formatDecimal(negativeMarksDeducted)}", leftLeft + 25f, ySummary + 148f, negTextPaint)
+
+        val divP = android.graphics.Paint().apply {
+            color = android.graphics.Color.parseColor("#DDD6FE")
+            strokeWidth = 2f
+        }
+        canvas.drawLine(leftLeft + 20f, ySummary + 185f, leftRight - 20f, ySummary + 185f, divP)
+
+        val totalMarksMax = if (totalCount > 0) (totalCount * (quiz.marksPerQuestion.takeIf { it > 0 } ?: 5f)).toInt() else 100
+        val netTextPaint = android.graphics.Paint().apply {
+            color = android.graphics.Color.parseColor("#4C1D95")
+            textSize = 22f
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+            isAntiAlias = true
+        }
+        canvas.drawText("★ Net Score: ${formatDecimal(score)} / $totalMarksMax Marks", leftLeft + 25f, ySummary + 235f, netTextPaint)
+
+        // ==========================================
+        // RIGHT COLUMN: Metrics, Stat Box, Performance
+        // ==========================================
+
+        // 1. 3-Column Metrics Row 1 (Time Taken, Speed, Marks)
+        val yRow1 = 40f
+        val colWidth = rightWidth / 3f
 
         fun drawMetricCol(
             colIndex: Int,
@@ -5928,8 +6048,8 @@ fun generateQuizReportImage(
             value: String,
             iconType: String
         ) {
-            val colCenterX = contentLeft + (colIndex * colWidth) + (colWidth / 2f)
-            val iconX = colCenterX - 55f
+            val colCenterX = rightLeft + (colIndex * colWidth) + (colWidth / 2f)
+            val iconX = colCenterX - 45f
             val iconY = yRow1 + 5f
 
             when (iconType) {
@@ -5937,22 +6057,22 @@ fun generateQuizReportImage(
                     val clockPaint = android.graphics.Paint().apply {
                         color = android.graphics.Color.parseColor("#7C3AED")
                         style = android.graphics.Paint.Style.STROKE
-                        strokeWidth = 3.5f
+                        strokeWidth = 3f
                         isAntiAlias = true
                     }
-                    canvas.drawCircle(iconX, iconY + 10f, 11f, clockPaint)
-                    canvas.drawLine(iconX, iconY + 10f, iconX, iconY + 4f, clockPaint)
-                    canvas.drawLine(iconX, iconY + 10f, iconX + 6f, iconY + 10f, clockPaint)
+                    canvas.drawCircle(iconX, iconY + 8f, 9f, clockPaint)
+                    canvas.drawLine(iconX, iconY + 8f, iconX, iconY + 3f, clockPaint)
+                    canvas.drawLine(iconX, iconY + 8f, iconX + 5f, iconY + 8f, clockPaint)
                 }
                 "speed" -> {
                     val gaugePaint = android.graphics.Paint().apply {
                         color = android.graphics.Color.parseColor("#7C3AED")
                         style = android.graphics.Paint.Style.STROKE
-                        strokeWidth = 3.5f
+                        strokeWidth = 3f
                         isAntiAlias = true
                     }
-                    canvas.drawArc(android.graphics.RectF(iconX - 11f, iconY - 1f, iconX + 11f, iconY + 21f), 180f, 180f, false, gaugePaint)
-                    canvas.drawLine(iconX, iconY + 10f, iconX + 6f, iconY + 3f, gaugePaint)
+                    canvas.drawArc(android.graphics.RectF(iconX - 9f, iconY - 1f, iconX + 9f, iconY + 17f), 180f, 180f, false, gaugePaint)
+                    canvas.drawLine(iconX, iconY + 8f, iconX + 5f, iconY + 2f, gaugePaint)
                 }
                 "marks" -> {
                     val starPaint = android.graphics.Paint().apply {
@@ -5960,52 +6080,50 @@ fun generateQuizReportImage(
                         style = android.graphics.Paint.Style.FILL
                         isAntiAlias = true
                     }
-                    canvas.drawCircle(iconX, iconY + 10f, 10f, starPaint)
+                    canvas.drawCircle(iconX, iconY + 8f, 8f, starPaint)
                 }
             }
 
             val titlePaint = android.graphics.Paint().apply {
                 color = android.graphics.Color.parseColor("#64748B")
-                textSize = 22f
+                textSize = 18f
                 typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
                 isAntiAlias = true
             }
-            canvas.drawText(title, iconX + 18f, yRow1 + 17f, titlePaint)
+            canvas.drawText(title, iconX + 15f, yRow1 + 14f, titlePaint)
 
             val valPaint = android.graphics.Paint().apply {
                 color = android.graphics.Color.parseColor("#0F172A")
-                textSize = 38f
+                textSize = 30f
                 typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
                 isAntiAlias = true
                 textAlign = android.graphics.Paint.Align.CENTER
             }
-            canvas.drawText(value, colCenterX, yRow1 + 65f, valPaint)
+            canvas.drawText(value, colCenterX, yRow1 + 54f, valPaint)
 
             if (colIndex < 2) {
                 val divPaint = android.graphics.Paint().apply {
                     color = android.graphics.Color.parseColor("#E2E8F0")
-                    strokeWidth = 2.5f
+                    strokeWidth = 2f
                 }
-                val divX = contentLeft + ((colIndex + 1) * colWidth)
-                canvas.drawLine(divX, yRow1, divX, yRow1 + 72f, divPaint)
+                val divX = rightLeft + ((colIndex + 1) * colWidth)
+                canvas.drawLine(divX, yRow1, divX, yRow1 + 60f, divPaint)
             }
         }
 
-        val totalMarksMax = if (totalCount > 0) (totalCount * (quiz.marksPerQuestion.takeIf { it > 0 } ?: 5f)).toInt() else 100
         val displayScoreMarks = "${formatDecimal(score)} / $totalMarksMax"
-
-        drawMetricCol(0, "Time Taken", timeStr, "time")
+        drawMetricCol(0, "Time", timeStr, "time")
         drawMetricCol(1, "Speed", avgTimeStr, "speed")
-        drawMetricCol(2, "Marks", displayScoreMarks, "marks")
+        drawMetricCol(2, "Score", displayScoreMarks, "marks")
 
-        // 6. 3-Column Container Row 2 (Correct, Wrong, Total)
-        val yRow2 = 745f
+        // 2. 3-Column Container Row 2 (Correct, Wrong, Total)
+        val yRow2 = 145f
         val boxBgPaint = android.graphics.Paint().apply {
             color = android.graphics.Color.parseColor("#F5F3FF")
             isAntiAlias = true
         }
-        val boxRect = android.graphics.RectF(contentLeft, yRow2, contentRight, yRow2 + 120f)
-        canvas.drawRoundRect(boxRect, 24f, 24f, boxBgPaint)
+        val boxRect = android.graphics.RectF(rightLeft, yRow2, rightRight, yRow2 + 110f)
+        canvas.drawRoundRect(boxRect, 20f, 20f, boxBgPaint)
 
         fun drawStatBoxCol(
             colIndex: Int,
@@ -6014,49 +6132,49 @@ fun generateQuizReportImage(
             badgeColorHex: String,
             symbol: String
         ) {
-            val colCenterX = contentLeft + (colIndex * colWidth) + (colWidth / 2f)
-            val badgeX = colCenterX - 52f
-            val badgeY = yRow2 + 35f
+            val colCenterX = rightLeft + (colIndex * colWidth) + (colWidth / 2f)
+            val badgeX = colCenterX - 42f
+            val badgeY = yRow2 + 30f
 
             val bPaint = android.graphics.Paint().apply {
                 color = android.graphics.Color.parseColor(badgeColorHex)
                 isAntiAlias = true
             }
-            canvas.drawCircle(badgeX, badgeY, 16f, bPaint)
+            canvas.drawCircle(badgeX, badgeY, 14f, bPaint)
 
             val symPaint = android.graphics.Paint().apply {
                 color = android.graphics.Color.WHITE
-                textSize = 19f
+                textSize = 16f
                 typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
                 isAntiAlias = true
                 textAlign = android.graphics.Paint.Align.CENTER
             }
-            canvas.drawText(symbol, badgeX, badgeY + 6.5f, symPaint)
+            canvas.drawText(symbol, badgeX, badgeY + 5.5f, symPaint)
 
             val tPaint = android.graphics.Paint().apply {
                 color = android.graphics.Color.parseColor("#475569")
-                textSize = 23f
+                textSize = 19f
                 typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
                 isAntiAlias = true
             }
-            canvas.drawText(title, badgeX + 24f, badgeY + 8f, tPaint)
+            canvas.drawText(title, badgeX + 20f, badgeY + 7f, tPaint)
 
             val vPaint = android.graphics.Paint().apply {
                 color = android.graphics.Color.parseColor("#0F172A")
-                textSize = 40f
+                textSize = 36f
                 typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
                 isAntiAlias = true
                 textAlign = android.graphics.Paint.Align.CENTER
             }
-            canvas.drawText(value, colCenterX, yRow2 + 98f, vPaint)
+            canvas.drawText(value, colCenterX, yRow2 + 88f, vPaint)
 
             if (colIndex < 2) {
                 val divP = android.graphics.Paint().apply {
                     color = android.graphics.Color.parseColor("#DDD6FE")
                     strokeWidth = 2f
                 }
-                val divX = contentLeft + ((colIndex + 1) * colWidth)
-                canvas.drawLine(divX, yRow2 + 15f, divX, yRow2 + 105f, divP)
+                val divX = rightLeft + ((colIndex + 1) * colWidth)
+                canvas.drawLine(divX, yRow2 + 12f, divX, yRow2 + 98f, divP)
             }
         }
 
@@ -6064,115 +6182,94 @@ fun generateQuizReportImage(
         drawStatBoxCol(1, "Wrong", "$wrongCount", "#EF4444", "✕")
         drawStatBoxCol(2, "Total", "$totalCount", "#7C3AED", "★")
 
-        // 7. "Your Performance" Section
-        var yPerf = 925f
+        // 3. "Your Performance Breakdown" Section
+        var yPerf = 295f
         val sectionTitlePaint = android.graphics.Paint().apply {
             color = android.graphics.Color.parseColor("#1E1B4B")
-            textSize = 34f
+            textSize = 26f
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
             isAntiAlias = true
         }
-        canvas.drawText("Your Performance", contentLeft, yPerf, sectionTitlePaint)
+        canvas.drawText("Performance Breakdown", rightLeft, yPerf, sectionTitlePaint)
 
-        yPerf += 45f
+        yPerf += 40f
 
         val perfItems = listOf(
             Triple("${quiz.title} (${displayCategory})", percentage, "#10B981"),
             Triple("Vocabulary", ((percentage * 0.92f).toInt().coerceIn(15, 100)), "#2563EB"),
-            Triple("Reading", ((percentage * 0.84f).toInt().coerceIn(15, 100)), "#F59E0B"),
+            Triple("Reading Skills", ((percentage * 0.84f).toInt().coerceIn(15, 100)), "#F59E0B"),
             Triple("Comprehension", ((percentage * 0.76f).toInt().coerceIn(15, 100)), "#8B5CF6")
         )
 
-        val trackWidth = contentWidth - 360f
+        val trackWidth = rightWidth - 300f
 
         perfItems.forEach { (label, pct, colorHex) ->
             val labelPaint = android.graphics.Paint().apply {
                 color = android.graphics.Color.parseColor("#1F2937")
-                textSize = 23f
+                textSize = 19f
                 typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
                 isAntiAlias = true
             }
-            canvas.drawText(label, contentLeft, yPerf + 18f, labelPaint)
+            canvas.drawText(label, rightLeft, yPerf + 15f, labelPaint)
 
-            val trackLeft = contentLeft + 250f
+            val trackLeft = rightLeft + 200f
             val trackRight = trackLeft + trackWidth
-            val barRect = android.graphics.RectF(trackLeft, yPerf + 4f, trackRight, yPerf + 20f)
+            val barRect = android.graphics.RectF(trackLeft, yPerf + 3f, trackRight, yPerf + 18f)
 
             val trackPaintBg = android.graphics.Paint().apply {
                 color = android.graphics.Color.parseColor("#F1F5F9")
                 isAntiAlias = true
             }
-            canvas.drawRoundRect(barRect, 10f, 10f, trackPaintBg)
+            canvas.drawRoundRect(barRect, 8f, 8f, trackPaintBg)
 
             val fillRight = trackLeft + (trackWidth * (pct / 100f))
-            val fillRect = android.graphics.RectF(trackLeft, yPerf + 4f, fillRight, yPerf + 20f)
+            val fillRect = android.graphics.RectF(trackLeft, yPerf + 3f, fillRight, yPerf + 18f)
             val fillPaintBar = android.graphics.Paint().apply {
                 color = android.graphics.Color.parseColor(colorHex)
                 isAntiAlias = true
             }
-            canvas.drawRoundRect(fillRect, 10f, 10f, fillPaintBar)
+            canvas.drawRoundRect(fillRect, 8f, 8f, fillPaintBar)
 
             val pctPaint = android.graphics.Paint().apply {
                 color = android.graphics.Color.parseColor("#1F2937")
-                textSize = 23f
+                textSize = 19f
                 typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
                 isAntiAlias = true
                 textAlign = android.graphics.Paint.Align.RIGHT
             }
-            canvas.drawText("$pct%", contentRight, yPerf + 18f, pctPaint)
+            canvas.drawText("$pct%", rightRight, yPerf + 15f, pctPaint)
 
             yPerf += 44f
         }
 
-        // 8. Praise / Performance Card at Bottom
-        val yPraise = 1215f
-        val praiseBoxBg = android.graphics.Paint().apply {
-            color = android.graphics.Color.parseColor("#F5F3FF")
-            isAntiAlias = true
-        }
-        val praiseRect = android.graphics.RectF(contentLeft, yPraise, contentRight, yPraise + 130f)
-        canvas.drawRoundRect(praiseRect, 24f, 24f, praiseBoxBg)
-
-        // Starburst Icon
-        val starburstCenterX = contentLeft + 50f
-        val starburstCenterY = yPraise + 65f
-        val starburstPaint = android.graphics.Paint().apply {
+        // Branding Footer at Bottom Right
+        val footerPaint = android.graphics.Paint().apply {
             color = android.graphics.Color.parseColor("#7C3AED")
-            isAntiAlias = true
-        }
-        canvas.drawCircle(starburstCenterX, starburstCenterY, 20f, starburstPaint)
-
-        val starburstInnerPaint = android.graphics.Paint().apply {
-            color = android.graphics.Color.WHITE
-            textSize = 22f
+            textSize = 18f
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
             isAntiAlias = true
-            textAlign = android.graphics.Paint.Align.CENTER
+            textAlign = android.graphics.Paint.Align.RIGHT
         }
-        canvas.drawText("★", starburstCenterX, starburstCenterY + 7.5f, starburstInnerPaint)
+        canvas.drawText("Speed English • Verified Scorecard", rightRight, 680f, footerPaint)
 
-        val praiseTitleText = if (praiseText.isNotBlank()) praiseText else if (percentage >= 60) "Good Effort!" else "Keep Practicing!"
-        val praiseTitlePaint = android.graphics.Paint().apply {
-            color = android.graphics.Color.parseColor("#4C1D95")
-            textSize = 28f
-            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-            isAntiAlias = true
-        }
-        canvas.drawText(praiseTitleText, contentLeft + 95f, yPraise + 48f, praiseTitlePaint)
+        val timeStamp = System.currentTimeMillis()
 
-        val praiseSubPaint = android.graphics.Paint().apply {
-            color = android.graphics.Color.parseColor("#6B7280")
-            textSize = 21f
-            isAntiAlias = true
+        // Save Single Post Image (480x360 - 4:3 Aspect Ratio, Target: ~40KB WebP)
+        val reportFile = java.io.File(context.cacheDir, "quiz_report_$timeStamp.webp")
+        val scaledBitmap = android.graphics.Bitmap.createScaledBitmap(bitmap, 480, 360, true)
+        compressBitmapToWebpTargetSize(
+            bitmap = scaledBitmap,
+            outputFile = reportFile,
+            targetSizeBytes = 42 * 1024L, // ~40KB target
+            minSizeBytes = 35 * 1024L,    // ~35KB min target
+            initialQuality = 78
+        )
+        if (scaledBitmap != bitmap) {
+            scaledBitmap.recycle()
         }
-        canvas.drawText("You are making progress. Keep practicing!", contentLeft + 95f, yPraise + 88f, praiseSubPaint)
 
-        // Save Bitmap to File
-        val file = java.io.File(context.cacheDir, "quiz_report_${System.currentTimeMillis()}.jpg")
-        java.io.FileOutputStream(file).use { out ->
-            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)
-        }
-        return android.net.Uri.fromFile(file)
+        val reportUri = android.net.Uri.fromFile(reportFile)
+        return reportUri
     } catch (e: Exception) {
         e.printStackTrace()
         return null

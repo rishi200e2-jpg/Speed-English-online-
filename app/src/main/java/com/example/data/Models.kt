@@ -170,6 +170,8 @@ data class SocialPost(
     val title: String = "",
     val description: String = "",
     val mediaUrl: String = "",
+    val feedMediaUrl: String = "",
+    val originalMediaUrl: String = "",
     val mediaType: String = "image", // "image" or "video"
     val videoDuration: String = "", // e.g. "01:24" for video badge
     val authorName: String = "Speed English",

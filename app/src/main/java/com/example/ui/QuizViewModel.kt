@@ -4294,6 +4294,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 obj.put("title", p.title)
                 obj.put("description", p.description)
                 obj.put("mediaUrl", p.mediaUrl)
+                obj.put("feedMediaUrl", p.feedMediaUrl)
+                obj.put("originalMediaUrl", p.originalMediaUrl)
                 obj.put("mediaType", p.mediaType)
                 obj.put("videoDuration", p.videoDuration)
                 obj.put("authorName", p.authorName)
@@ -4326,6 +4328,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                         title = obj.optString("title"),
                         description = obj.optString("description"),
                         mediaUrl = obj.optString("mediaUrl"),
+                        feedMediaUrl = obj.optString("feedMediaUrl"),
+                        originalMediaUrl = obj.optString("originalMediaUrl"),
                         mediaType = obj.optString("mediaType", "image"),
                         videoDuration = obj.optString("videoDuration"),
                         authorName = obj.optString("authorName", "Speed English"),
@@ -4380,6 +4384,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                     title = doc.getString("title") ?: "",
                     description = doc.getString("description") ?: "",
                     mediaUrl = doc.getString("mediaUrl") ?: "",
+                    feedMediaUrl = doc.getString("feedMediaUrl") ?: "",
+                    originalMediaUrl = doc.getString("originalMediaUrl") ?: "",
                     mediaType = doc.getString("mediaType") ?: "image",
                     videoDuration = doc.getString("videoDuration") ?: "",
                     authorName = doc.getString("authorName") ?: "Speed English",
@@ -4604,6 +4610,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
             "title" to updatedPost.title,
             "description" to updatedPost.description,
             "mediaUrl" to updatedPost.mediaUrl,
+            "feedMediaUrl" to updatedPost.feedMediaUrl,
+            "originalMediaUrl" to updatedPost.originalMediaUrl,
             "mediaType" to updatedPost.mediaType,
             "videoDuration" to updatedPost.videoDuration,
             "authorName" to updatedPost.authorName,

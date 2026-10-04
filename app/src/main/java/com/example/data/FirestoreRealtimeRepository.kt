@@ -287,6 +287,8 @@ class FirestoreRealtimeRepository(
                             title = doc.getString("title") ?: "",
                             description = doc.getString("description") ?: "",
                             mediaUrl = doc.getString("mediaUrl") ?: "",
+                            feedMediaUrl = doc.getString("feedMediaUrl") ?: "",
+                            originalMediaUrl = doc.getString("originalMediaUrl") ?: "",
                             mediaType = doc.getString("mediaType") ?: "image",
                             videoDuration = doc.getString("videoDuration") ?: "",
                             authorName = doc.getString("authorName") ?: "Speed English",

@@ -264,12 +264,26 @@ fun PostTabContent(viewModel: QuizViewModel) {
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         contentPadding = PaddingValues(top = 10.dp, bottom = 80.dp)
                     ) {
-                        items(visiblePosts, key = { it.documentId }) { post ->
-                            SocialPostCard(
-                                post = post,
-                                viewModel = viewModel,
-                                onMediaClick = { fullMediaPost = post }
-                            )
+                        visiblePosts.forEachIndexed { index, post ->
+                            item(key = post.documentId) {
+                                SocialPostCard(
+                                    post = post,
+                                    viewModel = viewModel,
+                                    onMediaClick = { fullMediaPost = post }
+                                )
+                            }
+                            // Insert exactly 1 Native Ad after every 4 actual posts
+                            if ((index + 1) % 4 == 0) {
+                                val adSlotIndex = (index + 1) / 4
+                                item(key = "native_ad_feed_slot_$adSlotIndex") {
+                                    com.example.ads.NativeAdContainer(
+                                        placement = "post_feed_ad_$adSlotIndex",
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .widthIn(max = 600.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -465,11 +479,12 @@ fun SocialPostCard(
             )
 
             // Media Box (Image or Video)
-            if (post.mediaUrl.isNotBlank()) {
+            val effectiveMediaUrl = post.mediaUrl.ifBlank { post.feedMediaUrl.ifBlank { post.originalMediaUrl } }
+            if (effectiveMediaUrl.isNotBlank()) {
                 Spacer(modifier = Modifier.height(12.dp))
                 if (post.mediaType.equals("video", ignoreCase = true)) {
                     PostVideoCardPlayer(
-                        videoUrl = post.mediaUrl,
+                        videoUrl = effectiveMediaUrl,
                         videoDuration = post.videoDuration,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -480,22 +495,23 @@ fun SocialPostCard(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 14.dp)
+                            .aspectRatio(4f / 3f)
                             .clip(RoundedCornerShape(14.dp))
                             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                             .clickable { onMediaClick() },
                         contentAlignment = Alignment.Center
                     ) {
                         val context = LocalContext.current
-                        val imageModel: Any = remember(post.mediaUrl) {
-                            if (post.mediaUrl.startsWith("data:image")) {
+                        val imageModel: Any = remember(effectiveMediaUrl) {
+                            if (effectiveMediaUrl.startsWith("data:image")) {
                                 try {
-                                    val base64Data = post.mediaUrl.substringAfter("base64,")
+                                    val base64Data = effectiveMediaUrl.substringAfter("base64,")
                                     android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
                                 } catch (e: Exception) {
-                                    post.mediaUrl
+                                    effectiveMediaUrl
                                 }
                             } else {
-                                post.mediaUrl
+                                effectiveMediaUrl
                             }
                         }
 
@@ -507,10 +523,8 @@ fun SocialPostCard(
                                 .memoryCachePolicy(CachePolicy.ENABLED)
                                 .build(),
                             contentDescription = post.title,
-                            contentScale = ContentScale.FillWidth,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .wrapContentHeight()
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
                 }
@@ -923,16 +937,17 @@ fun SocialMediaPreviewDialog(
                     contentAlignment = Alignment.Center
                 ) {
                     val context = LocalContext.current
-                    val fullImageModel: Any = remember(post.mediaUrl) {
-                        if (post.mediaUrl.startsWith("data:image")) {
+                    val fullMediaUrl = post.mediaUrl.ifBlank { post.feedMediaUrl.ifBlank { post.originalMediaUrl } }
+                    val fullImageModel: Any = remember(fullMediaUrl) {
+                        if (fullMediaUrl.startsWith("data:image")) {
                             try {
-                                val base64Data = post.mediaUrl.substringAfter("base64,")
+                                val base64Data = fullMediaUrl.substringAfter("base64,")
                                 android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
                             } catch (e: Exception) {
-                                post.mediaUrl
+                                fullMediaUrl
                             }
                         } else {
-                            post.mediaUrl
+                            fullMediaUrl
                         }
                     }
 

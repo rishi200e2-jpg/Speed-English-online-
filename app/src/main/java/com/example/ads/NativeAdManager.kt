@@ -214,6 +214,14 @@ object NativeAdManager {
     }
 
     private fun getFallbackTestAd(placement: String): NativeAdState.TestPreview {
+        if (placement.startsWith("post_feed")) {
+            return NativeAdState.TestPreview(
+                headline = "Speed English Community",
+                body = "Join live group discussions, daily idioms challenge and grammar drills.",
+                callToAction = "Join Now",
+                advertiser = "4.9 ★ Google Play"
+            )
+        }
         return when (placement) {
             "practice_screen" -> NativeAdState.TestPreview(
                 headline = "Speed Math Pro",
