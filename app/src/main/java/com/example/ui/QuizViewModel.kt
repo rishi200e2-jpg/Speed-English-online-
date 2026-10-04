@@ -118,6 +118,14 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     private val _currentUserRole = MutableStateFlow<String?>(sharedPrefs.getString("session_user_role", if (isTestEnv) "Admin" else null))
     val currentUserRole: StateFlow<String?> = _currentUserRole.asStateFlow()
 
+    fun isCurrentUserAdmin(): Boolean {
+        val role = _currentUserRole.value ?: sharedPrefs.getString("session_user_role", null)
+        val email = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.email
+            ?: sharedPrefs.getString("session_user_email", null)
+        return role?.equals("admin", ignoreCase = true) == true ||
+                email?.equals("sd504212@gmail.com", ignoreCase = true) == true
+    }
+
     fun saveSessionLocally(email: String, role: String, name: String, uid: String) {
         sharedPrefs.edit().apply {
             putString("session_user_email", email)
@@ -302,7 +310,10 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         if (isTestEnv) return
         val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
         if (auditLogsFirestoreListenerRegistration == null) {
-            auditLogsFirestoreListenerRegistration = firestore.collection("question_audit_logs")
+            val query = firestore.collection("question_audit_logs")
+                .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                .limit(50)
+            auditLogsFirestoreListenerRegistration = query
                 .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
                     if (error != null) {
                         Log.e("QuizViewModel", "Error listening to question_audit_logs: ${error.message}")
@@ -350,6 +361,11 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun stopObservingAuditLogsFirestore() {
+        auditLogsFirestoreListenerRegistration?.remove()
+        auditLogsFirestoreListenerRegistration = null
+    }
+
     /**
      * Actively queries Cloud Firestore for audit logs and syncs with Room.
      */
@@ -359,7 +375,10 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                 val snapshot = com.google.android.gms.tasks.Tasks.await(
-                    firestore.collection("question_audit_logs").get()
+                    firestore.collection("question_audit_logs")
+                        .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                        .limit(50)
+                        .get()
                 )
                 if (!snapshot.isEmpty) {
                     val logs = snapshot.documents.mapNotNull { doc ->
@@ -536,148 +555,220 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         com.example.data.FirestoreLoggingInterceptor.clearLogs()
     }
 
-    fun startRealtimeFirestoreSync() {
+    fun startRealtimeFirestoreSync(forceRestart: Boolean = false) {
         if (!_isNetworkAvailable.value) {
             logFirestore("Offline mode active. Using local Room cache.")
             return
         }
         
+        if (forceRestart) {
+            categoriesListenerRegistration?.remove()
+            quizzesListenerRegistration?.remove()
+            categoriesListenerRegistration = null
+            quizzesListenerRegistration = null
+        } else if (categoriesListenerRegistration != null && quizzesListenerRegistration != null) {
+            logFirestore("Real-time live sync already active.")
+            return
+        }
+
         val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
         _isLiveSyncing.value = true
         logFirestore("Initializing live synchronization...")
 
         // 1. Listen to Categories
-        categoriesListenerRegistration?.remove()
-        categoriesListenerRegistration = firestore.collection("categories")
-            .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
-                val startTime = System.currentTimeMillis()
-                if (error != null) {
-                    Log.e("QuizViewModel", "Categories sync error: ${error.message}", error)
-                    logFirestore("Categories sync error: ${error.message}")
-                    com.example.data.FirestoreLoggingInterceptor.logRead("categories", 0, "ERROR", 0, false, error.message)
-                    return@addSnapshotListener
-                }
-                if (snapshot != null) {
-                    val isFromCache = snapshot.metadata.isFromCache
-                    val hasPendingWrites = snapshot.metadata.hasPendingWrites()
-                    val latency = System.currentTimeMillis() - startTime
-                    com.example.data.FirestoreLoggingInterceptor.logListenerEvent("categories", snapshot.size(), hasPendingWrites, isFromCache, latency)
-                    
-                    if (hasPendingWrites) {
-                        Log.d("QuizViewModel", "Local write pending for categories (instant cache emit)")
+        if (categoriesListenerRegistration == null) {
+            categoriesListenerRegistration = firestore.collection("categories")
+                .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
+                    val startTime = System.currentTimeMillis()
+                    if (error != null) {
+                        Log.e("QuizViewModel", "Categories sync error: ${error.message}", error)
+                        logFirestore("Categories sync error: ${error.message}")
+                        com.example.data.FirestoreLoggingInterceptor.logRead("categories", 0, "ERROR", 0, false, error.message)
+                        return@addSnapshotListener
                     }
-                    viewModelScope.launch(Dispatchers.IO) {
-                        try {
-                            val remoteCategories = snapshot.documents.mapNotNull { doc ->
-                                val isDraftVal = doc.getBoolean("isDraft") ?: false
-                                val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
-                                Category(
-                                    documentId = doc.id,
-                                    name = doc.getString("name") ?: "",
-                                    description = doc.getString("description") ?: "",
-                                    iconName = doc.getString("iconName") ?: "general",
-                                    isDraft = isDraftVal,
-                                    status = statusVal,
-                                    parentCategoryId = doc.getString("parentCategoryId"),
-                                    createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
-                                    updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
-                                )
-                            }
-                            
-                            if (remoteCategories.isNotEmpty()) {
-                                remoteCategories.forEach { repository.insertCategory(it) }
-                            }
-
-                            // Only process explicit deletions from cloud
-                            snapshot.documentChanges.forEach { change ->
-                                if (change.type == com.google.firebase.firestore.DocumentChange.Type.REMOVED) {
-                                    val catId = change.document.id
-                                    repository.getCategoryById(catId)?.let { repository.deleteCategory(it) }
+                    if (snapshot != null) {
+                        val isFromCache = snapshot.metadata.isFromCache
+                        val hasPendingWrites = snapshot.metadata.hasPendingWrites()
+                        val latency = System.currentTimeMillis() - startTime
+                        com.example.data.FirestoreLoggingInterceptor.logListenerEvent("categories", snapshot.size(), hasPendingWrites, isFromCache, latency)
+                        
+                        if (hasPendingWrites) {
+                            Log.d("QuizViewModel", "Local write pending for categories (instant cache emit)")
+                        }
+                        viewModelScope.launch(Dispatchers.IO) {
+                            try {
+                                if (snapshot.documentChanges.isNotEmpty()) {
+                                    snapshot.documentChanges.forEach { change ->
+                                        val doc = change.document
+                                        val catId = doc.id
+                                        when (change.type) {
+                                            com.google.firebase.firestore.DocumentChange.Type.ADDED,
+                                            com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
+                                                val isDraftVal = doc.getBoolean("isDraft") ?: false
+                                                val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
+                                                val cat = Category(
+                                                    documentId = catId,
+                                                    name = doc.getString("name") ?: "",
+                                                    description = doc.getString("description") ?: "",
+                                                    iconName = doc.getString("iconName") ?: "general",
+                                                    isDraft = isDraftVal,
+                                                    status = statusVal,
+                                                    parentCategoryId = doc.getString("parentCategoryId"),
+                                                    createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                                                    updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
+                                                )
+                                                repository.insertCategory(cat)
+                                            }
+                                            com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
+                                                repository.getCategoryById(catId)?.let { repository.deleteCategory(it) }
+                                            }
+                                        }
+                                    }
+                                    _lastSyncTime.value = System.currentTimeMillis()
+                                    sharedPrefs.edit().putLong("last_sync_time", _lastSyncTime.value).apply()
+                                    logFirestore("Categories synchronized live (${snapshot.documentChanges.size} changes).")
+                                    triggerRealtimeSyncReload()
                                 }
+                            } catch (e: Exception) {
+                                Log.e("QuizViewModel", "Error in categories sync: ${e.message}", e)
                             }
-                            
-                            _lastSyncTime.value = System.currentTimeMillis()
-                            sharedPrefs.edit().putLong("last_sync_time", _lastSyncTime.value).apply()
-                            logFirestore("Categories synchronized live (Count: ${remoteCategories.size}).")
-                            triggerRealtimeSyncReload()
-                        } catch (e: Exception) {
-                            Log.e("QuizViewModel", "Error in categories sync: ${e.message}", e)
                         }
                     }
                 }
+        }
+
+        // 2. Listen to Quizzes (Admin: all quizzes; Regular users: published quizzes only)
+        if (quizzesListenerRegistration == null) {
+            val isAdmin = isCurrentUserAdmin()
+            val quizzesQuery: com.google.firebase.firestore.Query = if (isAdmin) {
+                firestore.collection("quizzes")
+            } else {
+                firestore.collection("quizzes").whereEqualTo("status", "published")
             }
-
-        // 2. Listen to Quizzes
-        quizzesListenerRegistration?.remove()
-        quizzesListenerRegistration = firestore.collection("quizzes")
-            .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
-                val startTime = System.currentTimeMillis()
-                if (error != null) {
-                    Log.e("QuizViewModel", "Quizzes sync error: ${error.message}", error)
-                    com.example.data.FirestoreLoggingInterceptor.logRead("quizzes", 0, "ERROR", 0, false, error.message)
-                    return@addSnapshotListener
-                }
-                if (snapshot != null) {
-                    val isFromCache = snapshot.metadata.isFromCache
-                    val hasPendingWrites = snapshot.metadata.hasPendingWrites()
-                    val latency = System.currentTimeMillis() - startTime
-                    com.example.data.FirestoreLoggingInterceptor.logListenerEvent("quizzes", snapshot.size(), hasPendingWrites, isFromCache, latency)
-                    
-                    if (hasPendingWrites) {
-                        Log.d("QuizViewModel", "Local write pending for quizzes (instant cache emit)")
+            quizzesListenerRegistration = quizzesQuery
+                .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
+                    val startTime = System.currentTimeMillis()
+                    if (error != null) {
+                        Log.e("QuizViewModel", "Quizzes sync error: ${error.message}", error)
+                        com.example.data.FirestoreLoggingInterceptor.logRead("quizzes", 0, "ERROR", 0, false, error.message)
+                        return@addSnapshotListener
                     }
-                    viewModelScope.launch(Dispatchers.IO) {
-                        try {
-                            val remoteQuizzes = snapshot.documents.mapNotNull { doc ->
-                                val isDraftVal = doc.getBoolean("isDraft") ?: false
-                                val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
-                                val existingQuiz = repository.getQuizById(doc.id)
-                                val firestoreSort = doc.getLong("sortOrder")?.toInt()
-                                val sortOrderVal = firestoreSort ?: existingQuiz?.sortOrder ?: 0
-                                Quiz(
-                                    documentId = doc.id,
-                                    categoryId = doc.getString("categoryId") ?: "",
-                                    title = doc.getString("title") ?: "",
-                                    description = doc.getString("description") ?: "",
-                                    timeLimitSeconds = doc.getLong("timeLimitSeconds")?.toInt() ?: 20,
-                                    isDraft = isDraftVal,
-                                    status = statusVal,
-                                    version = doc.getLong("version")?.toInt() ?: 1,
-                                    shuffleQuestions = doc.getBoolean("shuffleQuestions") ?: false,
-                                    marksPerQuestion = doc.getDouble("marksPerQuestion")?.toFloat() ?: 1.0f,
-                                    negativeMarking = doc.getDouble("negativeMarking")?.toFloat() ?: 0.0f,
-                                    sortOrder = sortOrderVal,
-                                    createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
-                                    updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis(),
-                                    publishedAt = doc.getLong("publishedAt")
-                                )
-                            }
-                            
-                            if (remoteQuizzes.isNotEmpty()) {
-                                remoteQuizzes.forEach { repository.insertQuiz(it) }
-                            }
-
-                            // Only process explicit deletions from cloud
-                            snapshot.documentChanges.forEach { change ->
-                                if (change.type == com.google.firebase.firestore.DocumentChange.Type.REMOVED) {
-                                    val quizId = change.document.id
-                                    repository.getQuizById(quizId)?.let { repository.deleteQuiz(it) }
+                    if (snapshot != null) {
+                        val isFromCache = snapshot.metadata.isFromCache
+                        val hasPendingWrites = snapshot.metadata.hasPendingWrites()
+                        val latency = System.currentTimeMillis() - startTime
+                        com.example.data.FirestoreLoggingInterceptor.logListenerEvent("quizzes", snapshot.size(), hasPendingWrites, isFromCache, latency)
+                        
+                        if (hasPendingWrites) {
+                            Log.d("QuizViewModel", "Local write pending for quizzes (instant cache emit)")
+                        }
+                        viewModelScope.launch(Dispatchers.IO) {
+                            try {
+                                if (snapshot.documentChanges.isNotEmpty()) {
+                                    snapshot.documentChanges.forEach { change ->
+                                        val doc = change.document
+                                        val quizId = doc.id
+                                        when (change.type) {
+                                            com.google.firebase.firestore.DocumentChange.Type.ADDED,
+                                            com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
+                                                val isDraftVal = doc.getBoolean("isDraft") ?: false
+                                                val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
+                                                val existingQuiz = repository.getQuizById(quizId)
+                                                val firestoreSort = doc.getLong("sortOrder")?.toInt()
+                                                val sortOrderVal = firestoreSort ?: existingQuiz?.sortOrder ?: 0
+                                                val quiz = Quiz(
+                                                    documentId = quizId,
+                                                    categoryId = doc.getString("categoryId") ?: "",
+                                                    title = doc.getString("title") ?: "",
+                                                    description = doc.getString("description") ?: "",
+                                                    timeLimitSeconds = doc.getLong("timeLimitSeconds")?.toInt() ?: 20,
+                                                    isDraft = isDraftVal,
+                                                    status = statusVal,
+                                                    version = doc.getLong("version")?.toInt() ?: 1,
+                                                    shuffleQuestions = doc.getBoolean("shuffleQuestions") ?: false,
+                                                    marksPerQuestion = doc.getDouble("marksPerQuestion")?.toFloat() ?: 1.0f,
+                                                    negativeMarking = doc.getDouble("negativeMarking")?.toFloat() ?: 0.0f,
+                                                    sortOrder = sortOrderVal,
+                                                    createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                                                    updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis(),
+                                                    publishedAt = doc.getLong("publishedAt")
+                                                )
+                                                repository.insertQuiz(quiz)
+                                            }
+                                            com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
+                                                repository.getQuizById(quizId)?.let { repository.deleteQuiz(it) }
+                                            }
+                                        }
+                                    }
+                                    logFirestore("Quizzes synchronized live (${snapshot.documentChanges.size} changes).")
+                                    triggerRealtimeSyncReload()
                                 }
+                            } catch (e: Exception) {
+                                Log.e("QuizViewModel", "Error in quizzes sync: ${e.message}", e)
                             }
-                            
-                            logFirestore("Quizzes synchronized live (Count: ${remoteQuizzes.size}).")
-                            triggerRealtimeSyncReload()
-                        } catch (e: Exception) {
-                            Log.e("QuizViewModel", "Error in quizzes sync: ${e.message}", e)
                         }
                     }
                 }
-            }
+        }
 
-        // 3. Questions (No top-level listener to avoid database write locks and network fatigue during mass imports. 
-        // Questions are fetched on-demand in startQuiz and managed on-demand via the active quiz's subcollection listener).
-        questionsListenerRegistration?.remove()
-        questionsListenerRegistration = null
+        // 3. Questions (Real-time listener on top-level questions collection for all users to guarantee instant updates/deletions sync)
+        if (questionsListenerRegistration == null) {
+            questionsListenerRegistration = firestore.collection("questions")
+                .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
+                    val startTime = System.currentTimeMillis()
+                    if (error != null) {
+                        Log.e("QuizViewModel", "Questions sync error: ${error.message}", error)
+                        logFirestore("Questions sync error: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        val isFromCache = snapshot.metadata.isFromCache
+                        val hasPendingWrites = snapshot.metadata.hasPendingWrites()
+                        val latency = System.currentTimeMillis() - startTime
+                        com.example.data.FirestoreLoggingInterceptor.logListenerEvent("questions", snapshot.size(), hasPendingWrites, isFromCache, latency)
+                        
+                        viewModelScope.launch(Dispatchers.IO) {
+                            try {
+                                if (snapshot.documentChanges.isNotEmpty()) {
+                                    snapshot.documentChanges.forEach { change ->
+                                        val doc = change.document
+                                        val questionId = doc.id
+                                        when (change.type) {
+                                            com.google.firebase.firestore.DocumentChange.Type.ADDED,
+                                            com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
+                                                val q = Question(
+                                                    documentId = questionId,
+                                                    quizId = doc.getString("quizId") ?: "",
+                                                    text = doc.getString("text") ?: "",
+                                                    optionA = doc.getString("optionA") ?: "",
+                                                    optionB = doc.getString("optionB") ?: "",
+                                                    optionC = doc.getString("optionC") ?: "",
+                                                    optionD = doc.getString("optionD") ?: "",
+                                                    correctOption = doc.getString("correctOption") ?: "A",
+                                                    explanation = doc.getString("explanation") ?: "",
+                                                    version = doc.getLong("version")?.toInt() ?: 1,
+                                                    createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                                                    updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
+                                                )
+                                                repository.insertQuestion(q)
+                                            }
+                                            com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
+                                                repository.deleteQuestionById(questionId)
+                                            }
+                                        }
+                                    }
+                                    _lastSyncTime.value = System.currentTimeMillis()
+                                    sharedPrefs.edit().putLong("last_sync_time", _lastSyncTime.value).apply()
+                                    logFirestore("Questions synchronized live (${snapshot.documentChanges.size} changes).")
+                                    triggerRealtimeSyncReload()
+                                }
+                            } catch (e: Exception) {
+                                Log.e("QuizViewModel", "Error in questions sync: ${e.message}", e)
+                            }
+                        }
+                    }
+                }
+        }
         _isLiveSyncing.value = false
     }
 
@@ -1014,7 +1105,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
             return Result.failure(IllegalStateException("Account is restricted."))
         }
         _isSubmittingQuiz.value = true
-        logFirestore("Submitting quiz attempt to cloud server...")
+        logFirestore("Saving quiz attempt locally...")
         return try {
             val userId = getCurrentUserId()
             val docId = if (attempt.documentId.isNotEmpty()) attempt.documentId else UUID.randomUUID().toString()
@@ -1026,23 +1117,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
             )
             
             repository.insertAttempt(finalAttempt)
-            
-            val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-            val batch = firestore.batch()
-            if (userId.isNotEmpty()) {
-                val userAttemptRef = firestore.collection("users").document(userId).collection("attempts").document(docId)
-                batch.set(userAttemptRef, finalAttempt)
-            }
-            val topAttemptRef = firestore.collection("attempts").document(docId)
-            batch.set(topAttemptRef, finalAttempt)
-
-            batch.commit()
-                .addOnSuccessListener {
-                    logFirestore("Quiz attempt synced successfully to Firestore user subcollection & root.")
-                }
-                .addOnFailureListener { e ->
-                    logFirestore("Quiz attempt saved locally (Pending cloud propagation: ${e.message}).")
-                }
+            logFirestore("Quiz attempt saved locally in Room database.")
 
             _attemptsList.value = repository.getAllAttempts()
             Result.success(finalAttempt)
@@ -1064,12 +1139,16 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startObservingUserAttemptsFirestore(uid: String) {
         if (uid.isBlank() || isRunningTest()) return
-        attemptsFirestoreListenerRegistration?.remove()
+        if (attemptsFirestoreListenerRegistration != null) return
         
         val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-        attemptsFirestoreListenerRegistration = firestore.collection("users")
+        val query = firestore.collection("users")
             .document(uid)
             .collection("attempts")
+            .orderBy("dateMillis", com.google.firebase.firestore.Query.Direction.DESCENDING)
+            .limit(15)
+
+        attemptsFirestoreListenerRegistration = query
             .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
                 if (error != null) {
                     Log.e("QuizViewModel", "Error listening to user attempts: ${error.message}", error)
@@ -1078,34 +1157,35 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 if (snapshot != null) {
                     viewModelScope.launch(Dispatchers.IO) {
                         try {
-                            // Process removals: when admin deletes an attempt from Firestore, delete it from user's Room DB
-                            snapshot.documentChanges.forEach { change ->
-                                if (change.type == com.google.firebase.firestore.DocumentChange.Type.REMOVED) {
-                                    val removedDocId = change.document.id
-                                    repository.deleteAttemptByDocumentId(removedDocId)
+                            if (snapshot.documentChanges.isNotEmpty()) {
+                                snapshot.documentChanges.forEach { change ->
+                                    val doc = change.document
+                                    when (change.type) {
+                                        com.google.firebase.firestore.DocumentChange.Type.ADDED,
+                                        com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
+                                            val attempt = QuizAttempt(
+                                                documentId = doc.id,
+                                                quizTitle = doc.getString("quizTitle") ?: "",
+                                                categoryName = doc.getString("categoryName") ?: "",
+                                                score = doc.getDouble("score")?.toFloat() ?: 0f,
+                                                totalQuestions = doc.getLong("totalQuestions")?.toInt() ?: 0,
+                                                dateMillis = doc.getLong("dateMillis") ?: System.currentTimeMillis(),
+                                                userId = doc.getString("userId") ?: uid,
+                                                quizDocumentId = doc.getString("quizDocumentId") ?: "",
+                                                quizVersion = doc.getLong("quizVersion")?.toInt() ?: 1,
+                                                correctCount = doc.getLong("correctCount")?.toInt() ?: 0,
+                                                wrongCount = doc.getLong("wrongCount")?.toInt() ?: 0,
+                                                createdAt = doc.getLong("createdAt") ?: doc.getLong("dateMillis") ?: System.currentTimeMillis()
+                                            )
+                                            repository.insertAttempt(attempt)
+                                        }
+                                        com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
+                                            repository.deleteAttemptByDocumentId(change.document.id)
+                                        }
+                                    }
                                 }
+                                _attemptsList.value = repository.getAllAttempts()
                             }
-
-                            val remoteAttempts = snapshot.documents.mapNotNull { doc ->
-                                QuizAttempt(
-                                    documentId = doc.id,
-                                    quizTitle = doc.getString("quizTitle") ?: "",
-                                    categoryName = doc.getString("categoryName") ?: "",
-                                    score = doc.getDouble("score")?.toFloat() ?: 0f,
-                                    totalQuestions = doc.getLong("totalQuestions")?.toInt() ?: 0,
-                                    dateMillis = doc.getLong("dateMillis") ?: System.currentTimeMillis(),
-                                    userId = doc.getString("userId") ?: uid,
-                                    quizDocumentId = doc.getString("quizDocumentId") ?: "",
-                                    quizVersion = doc.getLong("quizVersion")?.toInt() ?: 1,
-                                    correctCount = doc.getLong("correctCount")?.toInt() ?: 0,
-                                    wrongCount = doc.getLong("wrongCount")?.toInt() ?: 0,
-                                    createdAt = doc.getLong("createdAt") ?: doc.getLong("dateMillis") ?: System.currentTimeMillis()
-                                )
-                            }
-                            if (remoteAttempts.isNotEmpty()) {
-                                repository.insertAttempts(remoteAttempts)
-                            }
-                            _attemptsList.value = repository.getAllAttempts()
                         } catch (e: Exception) {
                             Log.e("QuizViewModel", "Error in user attempts snapshot listener: ${e.message}", e)
                         }
@@ -1191,11 +1271,14 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startObservingAllRegisteredUsers() {
         if (isRunningTest()) return
-        allUsersListenerRegistration?.remove()
+        if (allUsersListenerRegistration != null) return
         _adminUsersLoading.value = true
         try {
             val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-            allUsersListenerRegistration = firestore.collection("users")
+            val query = firestore.collection("users")
+                .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                .limit(50)
+            allUsersListenerRegistration = query
                 .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, e ->
                     _adminUsersLoading.value = false
                     if (e != null) {
@@ -1237,17 +1320,91 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun stopObservingAllRegisteredUsers() {
+        allUsersListenerRegistration?.remove()
+        allUsersListenerRegistration = null
+        _adminUsersLoading.value = false
+    }
+
+    fun searchOlderUsers(queryText: String, onComplete: (Int) -> Unit = {}) {
+        if (queryText.isBlank() || isRunningTest()) return
+        _adminUsersLoading.value = true
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        val trimmed = queryText.trim()
+
+        val query = if (trimmed.contains("@")) {
+            firestore.collection("users")
+                .whereGreaterThanOrEqualTo("email", trimmed.lowercase())
+                .whereLessThanOrEqualTo("email", trimmed.lowercase() + "\uf8ff")
+                .limit(25)
+        } else {
+            firestore.collection("users")
+                .whereGreaterThanOrEqualTo("name", trimmed)
+                .whereLessThanOrEqualTo("name", trimmed + "\uf8ff")
+                .limit(25)
+        }
+
+        query.get().addOnSuccessListener { snapshot ->
+            _adminUsersLoading.value = false
+            if (snapshot != null && !snapshot.isEmpty) {
+                val foundUsers = snapshot.documents.mapNotNull { doc ->
+                    val uid = doc.id
+                    val email = doc.getString("email") ?: ""
+                    val displayName = doc.getString("displayName") ?: doc.getString("name") ?: ""
+                    val name = doc.getString("name") ?: displayName
+                    val role = doc.getString("role") ?: "user"
+                    val status = doc.getString("status") ?: if (doc.getBoolean("blocked") == true) "blocked" else "active"
+                    val blocked = doc.getBoolean("blocked") == true || status.equals("blocked", ignoreCase = true)
+                    val createdAt = doc.getLong("createdAt") ?: 0L
+                    val updatedAt = doc.getLong("updatedAt") ?: 0L
+                    val lastLoginAt = doc.getLong("lastLoginAt") ?: 0L
+                    RegisteredUser(
+                        uid = uid,
+                        email = email,
+                        displayName = displayName,
+                        name = name,
+                        role = role,
+                        status = status,
+                        createdAt = createdAt,
+                        updatedAt = updatedAt,
+                        lastLoginAt = lastLoginAt,
+                        blocked = blocked
+                    )
+                }
+                val current = _allRegisteredUsers.value.toMutableList()
+                foundUsers.forEach { u ->
+                    if (current.none { it.uid == u.uid }) {
+                        current.add(u)
+                    }
+                }
+                _allRegisteredUsers.value = current
+                onComplete(foundUsers.size)
+            } else {
+                onComplete(0)
+            }
+        }.addOnFailureListener { e ->
+            _adminUsersLoading.value = false
+            _adminUsersError.value = "User search error: ${e.message}"
+            onComplete(0)
+        }
+    }
+
     fun loadAttemptsForUser(userId: String, email: String) {
         startObservingAttemptsForUser(userId, email)
     }
 
     fun startObservingAttemptsForUser(userId: String, email: String) {
         if (userId.isBlank() || isRunningTest()) return
-        userAttemptsListeners[userId]?.remove()
+        if (userAttemptsListeners.containsKey(userId)) {
+            return
+        }
 
         try {
             val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-            val registration = firestore.collection("users").document(userId).collection("attempts")
+            val query = firestore.collection("users").document(userId).collection("attempts")
+                .orderBy("dateMillis", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                .limit(15)
+            val registration = query
                 .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
                     if (error != null) {
                         Log.w("QuizViewModel", "Subcollection attempts listener error for $userId: ${error.message}")
@@ -1289,6 +1446,15 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         } catch (e: Exception) {
             Log.e("QuizViewModel", "Error starting attempts listener for user $userId: ${e.message}", e)
         }
+    }
+
+    fun stopObservingAttemptsForUser(userId: String) {
+        userAttemptsListeners.remove(userId)?.remove()
+    }
+
+    fun clearAllUserAttemptsListeners() {
+        userAttemptsListeners.values.forEach { it.remove() }
+        userAttemptsListeners.clear()
     }
 
     fun deleteAdminUserAttempt(
@@ -1866,8 +2032,6 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
             updateQuizQuestionsCounts()
             startObservingContactMethodsAndPrivacyPolicy()
             startObservingPosts()
-            startObservingAuditLogsFirestore()
-            refreshAuditLogsFromFirestore()
 
             // Attach SuperFast SyncManager Auth State Observer
             syncManager.attachAuthStateObserver(
@@ -1876,16 +2040,16 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                     startObservingUserAttemptsFirestore(uid)
                     startObservingRealtimeProgress(uid)
                     if (_autoSyncOnStartup.value) {
-                        startRealtimeFirestoreSync()
-                    }
-                    if (isAdmin) {
-                        startObservingAllRegisteredUsers()
+                        startRealtimeFirestoreSync(forceRestart = true)
                     }
                 },
                 onSignedOut = {
                     stopObservingUserAttemptsFirestore()
                     stopObservingRealtimeProgress()
                     stopRealtimeFirestoreSync()
+                    stopObservingAllRegisteredUsers()
+                    clearAllUserAttemptsListeners()
+                    stopObservingAuditLogsFirestore()
                 }
             )
 
@@ -2374,7 +2538,6 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (_currentScreen.value is Screen.ActiveQuiz && screen !is Screen.ActiveQuiz && screen !is Screen.Score) {
             saveQuizProgress()
-            saveQuizProgressToFirestore(isCompleted = false)
         }
         if (screen !is Screen.ActiveQuiz) {
             timerJob?.cancel()
@@ -2399,7 +2562,6 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
             val prev = backstack.removeAt(backstack.size - 1)
             if (_currentScreen.value is Screen.ActiveQuiz && prev !is Screen.ActiveQuiz && prev !is Screen.Score) {
                 saveQuizProgress()
-                saveQuizProgressToFirestore(isCompleted = false)
             }
             if (prev !is Screen.ActiveQuiz) {
                 timerJob?.cancel()
@@ -2472,108 +2634,22 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         _savedQuizProgress.value = null
     }
 
+    /**
+     * Active quiz progress is 100% local (persisted via quizProgressPrefs & Moshi JSON).
+     * Intermediate Firestore writes are disabled to minimize cost and prevent network failure during quizzes.
+     */
     fun saveQuizProgressToFirestore(isCompleted: Boolean = false) {
-        val currentQuiz = (currentScreen.value as? Screen.ActiveQuiz)?.quiz ?: return
-        val uid = getCurrentUserId()
-        if (uid.isEmpty()) return
         _isQuizProgressSynced.value = true
         _quizProgressSyncError.value = null
-
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val answersMap = _userQuestionsAnswersSession.value.associate { answer ->
-                    answer.question.documentId to (answer.selectedOptionLetter ?: "")
-                }.toMutableMap()
-
-                val activeQuestions = _questions.value
-                val currentIndex = _currentQuestionIndex.value
-                val currentQuestion = activeQuestions.getOrNull(currentIndex)
-                val currentSel = _selectedOption.value
-                if (currentQuestion != null && currentSel != null) {
-                    answersMap[currentQuestion.documentId] = currentSel
-                }
-
-                val now = System.currentTimeMillis()
-                repository.saveProgress(
-                    uid = uid,
-                    quizId = currentQuiz.documentId,
-                    score = _quizScore.value,
-                    completedAt = if (isCompleted) now else null,
-                    currentQuestionIndex = _currentQuestionIndex.value,
-                    answers = answersMap
-                )
-
-                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                val progressData = mapOf(
-                    "quizId" to currentQuiz.documentId,
-                    "score" to _quizScore.value,
-                    "completedAt" to if (isCompleted) now else null,
-                    "currentQuestionIndex" to _currentQuestionIndex.value,
-                    "answers" to answersMap,
-                    "quizVersion" to currentQuiz.version,
-                    "updatedAt" to now
-                )
-                
-                val batch = firestore.batch()
-                val userProgressRef = firestore.collection("users").document(uid).collection("progress").document(currentQuiz.documentId)
-                val liveProgressRef = firestore.collection("liveProgress").document(uid).collection("quizzes").document(currentQuiz.documentId)
-                batch.set(userProgressRef, progressData)
-                batch.set(liveProgressRef, progressData)
-
-                batch.commit()
-                    .addOnSuccessListener {
-                        _isQuizProgressSynced.value = true
-                    }
-                    .addOnFailureListener { e ->
-                        _isQuizProgressSynced.value = false
-                        _quizProgressSyncError.value = e.message
-                    }
-            } catch (e: Exception) {
-                Log.e("QuizViewModel", "Failed to save progress: ${e.message}", e)
-                _isQuizProgressSynced.value = false
-                _quizProgressSyncError.value = e.message
-            }
-        }
     }
 
     private var progressListenerRegistration: com.google.firebase.firestore.ListenerRegistration? = null
 
     fun startObservingRealtimeProgress(uid: String) {
-        if (uid.isBlank()) return
+        // Active quiz progress is local-only. Realtime snapshot listener on cloud progress is disabled
+        // to prevent unnecessary read costs and avoid self-triggering updates.
         progressListenerRegistration?.remove()
-        
-        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-        progressListenerRegistration = firestore.collection("users")
-            .document(uid)
-            .collection("progress")
-            .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
-                if (error != null) {
-                    Log.e("QuizViewModel", "Error observing realtime progress: ${error.message}", error)
-                    return@addSnapshotListener
-                }
-                if (snapshot != null) {
-                    val progressMap = snapshot.documents.associate { doc ->
-                        val quizId = doc.id
-                        val score = doc.getDouble("score")?.toFloat() ?: 0f
-                        val completedAt = doc.getLong("completedAt")
-                        val currentQuestionIndex = doc.getLong("currentQuestionIndex")?.toInt() ?: 0
-                        val answers = (doc.get("answers") as? Map<String, String>) ?: emptyMap()
-                        val quizVersion = doc.getLong("quizVersion")?.toInt() ?: 1
-                        val updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
-                        
-                        quizId to LiveProgressData(
-                            quizId = quizId,
-                            score = score,
-                            completedAt = completedAt,
-                            currentQuestionIndex = currentQuestionIndex,
-                            answers = answers,
-                            quizVersion = quizVersion,
-                            updatedAt = updatedAt
-                        )
-                    }
-                    _realtimeProgressMap.value = progressMap
-                }
-            }
+        progressListenerRegistration = null
     }
 
     fun stopObservingRealtimeProgress() {
@@ -2688,25 +2764,21 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val freshQuiz = repository.getQuizById(quiz.documentId) ?: quiz
 
-            if (_isNetworkAvailable.value) {
+            var rawQuestions = repository.getQuestionsForQuiz(freshQuiz.documentId)
+
+            if (rawQuestions.isEmpty() && _isNetworkAvailable.value) {
                 try {
                     val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                     
-                    // 1. Fetch both subcollection and top-level collection to guarantee complete SSoT
-                    val subcollTask = firestore.collection("quizzes")
-                        .document(freshQuiz.documentId)
-                        .collection("questions")
-                        .get()
+                    // Single on-demand top-level query for this specific quiz's questions
                     val topTask = firestore.collection("questions")
                         .whereEqualTo("quizId", freshQuiz.documentId)
                         .get()
                     
-                    val (subcollSnap, topSnap) = try {
-                        val s = com.google.android.gms.tasks.Tasks.await(subcollTask)
-                        val t = com.google.android.gms.tasks.Tasks.await(topTask)
-                        s to t
+                    val topSnap = try {
+                        com.google.android.gms.tasks.Tasks.await(topTask)
                     } catch (e: Exception) {
-                        null to null
+                        null
                     }
 
                     val mergedMap = mutableMapOf<String, Question>()
@@ -2731,36 +2803,15 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
-                    if (subcollSnap != null && !subcollSnap.isEmpty) {
-                        subcollSnap.documents.forEach { doc ->
-                            val q = Question(
-                                documentId = doc.id,
-                                quizId = freshQuiz.documentId,
-                                text = doc.getString("text") ?: "",
-                                optionA = doc.getString("optionA") ?: "",
-                                optionB = doc.getString("optionB") ?: "",
-                                optionC = doc.getString("optionC") ?: "",
-                                optionD = doc.getString("optionD") ?: "",
-                                correctOption = doc.getString("correctOption") ?: "A",
-                                explanation = doc.getString("explanation") ?: "",
-                                version = doc.getLong("version")?.toInt() ?: 1,
-                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
-                                updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
-                            )
-                            mergedMap[q.documentId] = q
-                        }
-                    }
-
                     val remoteQuestions = mergedMap.values.toList()
                     if (remoteQuestions.isNotEmpty()) {
                         repository.insertQuestions(remoteQuestions)
+                        rawQuestions = remoteQuestions
                     }
                 } catch (e: Exception) {
-                    Log.e("QuizViewModel", "Error syncing authoritative quiz questions: ${e.message}", e)
+                    Log.e("QuizViewModel", "Error in fallback quiz questions sync: ${e.message}", e)
                 }
             }
-
-            val rawQuestions = repository.getQuestionsForQuiz(freshQuiz.documentId)
             // Deterministic ordering by createdAt ASC, then documentId ASC
             val sortedQuestions = rawQuestions.sortedWith(compareBy({ it.createdAt }, { it.documentId }))
 
@@ -2786,7 +2837,6 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                     questionStartTimeMillis = System.currentTimeMillis()
                     startTimer(freshQuiz.timeLimitSeconds)
                     saveQuizProgress()
-                    saveQuizProgressToFirestore(isCompleted = false)
                 } else {
                     navigateTo(Screen.Score(freshQuiz, 0f, 0))
                 }
@@ -2813,7 +2863,6 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         if (_isCurrentUserBlocked.value) return
         _selectedOption.value = option
         saveQuizProgress()
-        saveQuizProgressToFirestore(isCompleted = false)
     }
 
     private fun timerExpired() {
@@ -2849,7 +2898,6 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
         timerJob?.cancel()
         clearQuizProgress()
-        saveQuizProgressToFirestore(isCompleted = true)
 
         quizEndTimeMillis = System.currentTimeMillis()
         val durationMillis = if (quizStartTimeMillis > 0L) (quizEndTimeMillis - quizStartTimeMillis) else 0L
@@ -2944,13 +2992,11 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 _selectedOption.value = null
                 questionStartTimeMillis = System.currentTimeMillis()
                 saveQuizProgress()
-                saveQuizProgressToFirestore(isCompleted = false)
             } else {
                 if (_isSubmittingQuiz.value) return
 
                 timerJob?.cancel()
                 clearQuizProgress()
-                saveQuizProgressToFirestore(isCompleted = true)
 
                 quizEndTimeMillis = System.currentTimeMillis()
                 val durationMillis = if (quizStartTimeMillis > 0L) (quizEndTimeMillis - quizStartTimeMillis) else 0L
@@ -4281,8 +4327,52 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     val postsSyncError: StateFlow<String?> = _postsSyncError.asStateFlow()
 
     private var postsListenerRegistration: com.google.firebase.firestore.ListenerRegistration? = null
-    private val sessionViewedPosts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-    private val pendingLikeOperations = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    // Dedicated persistent storage for unique-user Post interactions (survives app restart and process kill)
+    private val interactionPrefs: android.content.SharedPreferences by lazy {
+        application.getSharedPreferences("post_user_interactions_v1", Context.MODE_PRIVATE)
+    }
+
+    // Thread-safe in-flight locks to prevent concurrent duplicate calls and race conditions
+    private val inFlightViewOps = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val inFlightLikeOps = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val inFlightShareOps = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    fun isPostViewedByUser(postId: String, uid: String = getCurrentUserId()): Boolean {
+        if (postId.isBlank() || uid.isBlank()) return false
+        return interactionPrefs.getBoolean("view_${uid}_$postId", false)
+    }
+
+    private fun markPostViewedByUser(postId: String, uid: String) {
+        if (postId.isBlank() || uid.isBlank()) return
+        interactionPrefs.edit().putBoolean("view_${uid}_$postId", true).apply()
+    }
+
+    fun isPostLikedByUser(postId: String, uid: String = getCurrentUserId()): Boolean {
+        if (postId.isBlank() || uid.isBlank()) return false
+        if (interactionPrefs.getBoolean("like_${uid}_$postId", false)) return true
+        val post = _posts.value.find { it.documentId == postId }
+        if (post != null && post.likedUserIds.contains(uid)) {
+            markPostLikedByUser(postId, uid)
+            return true
+        }
+        return false
+    }
+
+    private fun markPostLikedByUser(postId: String, uid: String) {
+        if (postId.isBlank() || uid.isBlank()) return
+        interactionPrefs.edit().putBoolean("like_${uid}_$postId", true).apply()
+    }
+
+    fun isPostSharedByUser(postId: String, uid: String = getCurrentUserId()): Boolean {
+        if (postId.isBlank() || uid.isBlank()) return false
+        return interactionPrefs.getBoolean("share_${uid}_$postId", false)
+    }
+
+    private fun markPostSharedByUser(postId: String, uid: String) {
+        if (postId.isBlank() || uid.isBlank()) return
+        interactionPrefs.edit().putBoolean("share_${uid}_$postId", true).apply()
+    }
 
     private fun cachePostsLocally(posts: List<com.example.data.SocialPost>) {
         if (posts.isEmpty()) return
@@ -4401,7 +4491,11 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
 
-            postsListenerRegistration = firestore.collection("social_posts")
+            val query = firestore.collection("social_posts")
+                .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                .limit(30)
+
+            postsListenerRegistration = query
                 .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
                     if (error != null) {
                         Log.e("QuizViewModel", "Error in social_posts sync: ${error.message}")
@@ -4426,7 +4520,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                         }
 
                         // Fallback one-time fetch attempt (uses server or local cache)
-                        firestore.collection("social_posts").get()
+                        query.get()
                             .addOnSuccessListener { querySnap ->
                                 if (querySnap != null && !querySnap.isEmpty) {
                                     val fallbackItems = querySnap.documents.map { parseDoc(it) }
@@ -4477,96 +4571,178 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         startObservingPosts()
     }
 
+    fun stopObservingPosts() {
+        postsListenerRegistration?.remove()
+        postsListenerRegistration = null
+    }
+
     /**
-     * Records a view event atomically when the post is genuinely seen.
-     * Prevents recomposition/scrolling duplicates per user session.
+     * Records a view event permanently per unique user.
+     * ONE USER + ONE POST = maximum ONE counted view FOREVER.
+     * Only the first qualifying view executes Firestore: social_posts/{postId}.update("viewCount", increment(1)).
+     * Subsequent views across sessions, restarts, or devices perform ZERO Firestore writes.
      */
     fun recordPostView(postId: String) {
+        if (postId.isBlank()) return
         val uid = getCurrentUserId()
-        val sessionKey = "${postId}_$uid"
-        if (sessionViewedPosts.add(sessionKey)) {
-            // Optimistic local update
-            _posts.value = _posts.value.map {
-                if (it.documentId == postId) it.copy(viewCount = it.viewCount + 1) else it
-            }
+        if (uid.isBlank()) return
 
-            viewModelScope.launch(Dispatchers.IO) {
-                try {
-                    val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                    firestore.collection("social_posts").document(postId)
-                        .update("viewCount", com.google.firebase.firestore.FieldValue.increment(1))
-                } catch (e: Exception) {
-                    Log.w("QuizViewModel", "Failed incrementing view count: ${e.message}")
-                }
+        // 1. Permanent deduplication check: If already viewed by this user, perform zero writes
+        if (isPostViewedByUser(postId, uid)) {
+            return
+        }
+
+        // 2. Concurrency lock to prevent duplicate calls from rapid scrolling/recomposition
+        val opKey = "${uid}_$postId"
+        if (!inFlightViewOps.add(opKey)) {
+            return
+        }
+
+        // 3. Optimistic local UI update
+        val originalPosts = _posts.value
+        _posts.value = _posts.value.map {
+            if (it.documentId == postId) it.copy(viewCount = it.viewCount + 1) else it
+        }
+
+        // 4. Dispatch single atomic increment to Firestore
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                firestore.collection("social_posts").document(postId)
+                    .update("viewCount", com.google.firebase.firestore.FieldValue.increment(1))
+                    .addOnSuccessListener {
+                        // Successfully committed: mark permanently in persistent storage
+                        markPostViewedByUser(postId, uid)
+                        inFlightViewOps.remove(opKey)
+                    }
+                    .addOnFailureListener { e ->
+                        Log.w("QuizViewModel", "Failed incrementing view count: ${e.message}")
+                        // Roll back optimistic local count if write failed so it can be safely retried later
+                        _posts.value = originalPosts
+                        inFlightViewOps.remove(opKey)
+                    }
+            } catch (e: Exception) {
+                Log.w("QuizViewModel", "Exception in recordPostView: ${e.message}")
+                _posts.value = originalPosts
+                inFlightViewOps.remove(opKey)
             }
         }
     }
 
     /**
-     * Toggles like/unlike atomically for the current user.
-     * Prevents duplicate likes and double-tap race conditions.
+     * Records a like permanently per unique user.
+     * ONE USER + ONE POST = maximum ONE Like FOREVER.
+     * NO UNLIKE functionality exists: once liked, it remains active permanently.
+     * Further taps by the same user produce +0 count and zero Firestore writes.
      */
     fun togglePostLike(postId: String) {
+        if (postId.isBlank()) return
         val uid = getCurrentUserId()
-        val lockKey = "${postId}_$uid"
-        if (!pendingLikeOperations.add(lockKey)) {
-            // Already processing a tap for this post & user, ignore rapid duplicate tap
+        if (uid.isBlank()) return
+
+        // 1. Permanent deduplication check: If already liked by this user, perform zero writes
+        if (isPostLikedByUser(postId, uid)) {
             return
         }
 
         val post = _posts.value.find { it.documentId == postId }
-        if (post == null) {
-            pendingLikeOperations.remove(lockKey)
+        if (post == null || post.likedUserIds.contains(uid)) {
+            if (post != null && post.likedUserIds.contains(uid)) {
+                markPostLikedByUser(postId, uid)
+            }
             return
         }
 
-        val currentlyLiked = post.likedUserIds.contains(uid)
-        val updatedLikes = if (currentlyLiked) (post.likeCount - 1).coerceAtLeast(0L) else post.likeCount + 1
-        val updatedLikedUsers = if (currentlyLiked) post.likedUserIds - uid else post.likedUserIds + uid
+        // 2. Concurrency lock to prevent double-tap race conditions
+        val opKey = "${uid}_$postId"
+        if (!inFlightLikeOps.add(opKey)) {
+            return
+        }
 
-        // Optimistic local update - instant UI feedback
+        // 3. Optimistic local update - permanent like (+1 likeCount, user UID added to likedUserIds)
+        val originalPosts = _posts.value
+        val updatedLikes = post.likeCount + 1
+        val updatedLikedUsers = post.likedUserIds + uid
         _posts.value = _posts.value.map {
             if (it.documentId == postId) it.copy(likeCount = updatedLikes, likedUserIds = updatedLikedUsers) else it
         }
 
+        // 4. Dispatch single atomic increment to Firestore
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                if (currentlyLiked) {
-                    firestore.collection("social_posts").document(postId).update(
-                        "likeCount", com.google.firebase.firestore.FieldValue.increment(-1),
-                        "likedUserIds", com.google.firebase.firestore.FieldValue.arrayRemove(uid)
-                    )
-                } else {
-                    firestore.collection("social_posts").document(postId).update(
-                        "likeCount", com.google.firebase.firestore.FieldValue.increment(1),
-                        "likedUserIds", com.google.firebase.firestore.FieldValue.arrayUnion(uid)
-                    )
+                firestore.collection("social_posts").document(postId).update(
+                    "likeCount", com.google.firebase.firestore.FieldValue.increment(1),
+                    "likedUserIds", com.google.firebase.firestore.FieldValue.arrayUnion(uid)
+                )
+                .addOnSuccessListener {
+                    // Successfully committed: mark permanently in persistent storage
+                    markPostLikedByUser(postId, uid)
+                    inFlightLikeOps.remove(opKey)
+                }
+                .addOnFailureListener { e ->
+                    Log.w("QuizViewModel", "Failed incrementing post like: ${e.message}")
+                    // Roll back optimistic local count if write failed so it can be safely retried later
+                    _posts.value = originalPosts
+                    inFlightLikeOps.remove(opKey)
                 }
             } catch (e: Exception) {
-                Log.w("QuizViewModel", "Failed toggling post like: ${e.message}")
-            } finally {
-                pendingLikeOperations.remove(lockKey)
+                Log.w("QuizViewModel", "Exception in togglePostLike: ${e.message}")
+                _posts.value = originalPosts
+                inFlightLikeOps.remove(opKey)
             }
         }
     }
 
     /**
-     * Records a share action atomically.
+     * Records a share action permanently per unique user.
+     * ONE USER + ONE POST = maximum ONE counted Share FOREVER.
+     * Triggered only after Android Share Intent/action has successfully initiated.
+     * Subsequent shares by the same user produce +0 count and zero Firestore writes.
      */
     fun recordPostShare(postId: String) {
-        // Optimistic local update
+        if (postId.isBlank()) return
+        val uid = getCurrentUserId()
+        if (uid.isBlank()) return
+
+        // 1. Permanent deduplication check: If already shared by this user, perform zero writes
+        if (isPostSharedByUser(postId, uid)) {
+            return
+        }
+
+        // 2. Concurrency lock to prevent concurrent duplicate calls
+        val opKey = "${uid}_$postId"
+        if (!inFlightShareOps.add(opKey)) {
+            return
+        }
+
+        // 3. Optimistic local UI update
+        val originalPosts = _posts.value
         _posts.value = _posts.value.map {
             if (it.documentId == postId) it.copy(shareCount = it.shareCount + 1) else it
         }
 
+        // 4. Dispatch single atomic increment to Firestore
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                 firestore.collection("social_posts").document(postId)
                     .update("shareCount", com.google.firebase.firestore.FieldValue.increment(1))
+                    .addOnSuccessListener {
+                        // Successfully committed: mark permanently in persistent storage
+                        markPostSharedByUser(postId, uid)
+                        inFlightShareOps.remove(opKey)
+                    }
+                    .addOnFailureListener { e ->
+                        Log.w("QuizViewModel", "Failed incrementing share count: ${e.message}")
+                        // Roll back optimistic local count if write failed so it can be safely retried later
+                        _posts.value = originalPosts
+                        inFlightShareOps.remove(opKey)
+                    }
             } catch (e: Exception) {
-                Log.w("QuizViewModel", "Failed recording share: ${e.message}")
+                Log.w("QuizViewModel", "Exception in recordPostShare: ${e.message}")
+                _posts.value = originalPosts
+                inFlightShareOps.remove(opKey)
             }
         }
     }
@@ -4771,5 +4947,20 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 Log.w("QuizViewModel", "Failed updating post counters: ${e.message}")
                 onResult(false, e.message)
             }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        stopRealtimeFirestoreSync()
+        stopObservingUserAttemptsFirestore()
+        stopObservingRealtimeProgress()
+        stopObservingPosts()
+        stopObservingAllRegisteredUsers()
+        clearAllUserAttemptsListeners()
+        stopObservingAuditLogsFirestore()
+        contactMethodsListenerRegistration?.remove()
+        contactMethodsListenerRegistration = null
+        privacyPolicyListenerRegistration?.remove()
+        privacyPolicyListenerRegistration = null
     }
 }

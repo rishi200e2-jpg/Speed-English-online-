@@ -9969,9 +9969,12 @@ fun AdminAuditLogContent(
     viewModel: QuizViewModel,
     modifier: Modifier = Modifier
 ) {
-    LaunchedEffect(Unit) {
+    DisposableEffect(Unit) {
         viewModel.startObservingAuditLogsFirestore()
         viewModel.refreshAuditLogsFromFirestore()
+        onDispose {
+            viewModel.stopObservingAuditLogsFirestore()
+        }
     }
 
     val auditLogs by viewModel.auditLogs.collectAsState()
@@ -10444,9 +10447,13 @@ fun AdminUsersContent(
     var attemptToDelete by remember { mutableStateOf<QuizAttempt?>(null) }
     var userToResetProgress by remember { mutableStateOf<RegisteredUser?>(null) }
 
-    // Load registered users once on entry
-    LaunchedEffect(Unit) {
-        viewModel.loadAllRegisteredUsers()
+    // Observe registered users bounded to 50 on entry and detach immediately on exit
+    DisposableEffect(Unit) {
+        viewModel.startObservingAllRegisteredUsers()
+        onDispose {
+            viewModel.stopObservingAllRegisteredUsers()
+            viewModel.clearAllUserAttemptsListeners()
+        }
     }
 
     val filteredUsers = remember(users, searchQuery) {
@@ -10560,7 +10567,13 @@ fun AdminUsersContent(
             )
 
             IconButton(
-                onClick = { viewModel.loadAllRegisteredUsers() },
+                onClick = {
+                    if (searchQuery.isNotBlank()) {
+                        viewModel.searchOlderUsers(searchQuery)
+                    } else {
+                        viewModel.loadAllRegisteredUsers()
+                    }
+                },
                 modifier = Modifier
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), CircleShape)
                     .size(48.dp)
@@ -10569,7 +10582,11 @@ fun AdminUsersContent(
                 if (loading) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                 } else {
-                    Icon(Icons.Default.Refresh, contentDescription = "Refresh Users", tint = MaterialTheme.colorScheme.primary)
+                    Icon(
+                        imageVector = if (searchQuery.isNotBlank()) Icons.Default.Search else Icons.Default.Refresh,
+                        contentDescription = "Refresh or Search Users",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
                 }
             }
         }
@@ -10608,10 +10625,19 @@ fun AdminUsersContent(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = if (searchQuery.isNotEmpty()) "No users match '$searchQuery'" else "No registered users found.",
+                        text = if (searchQuery.isNotEmpty()) "No users match '$searchQuery' in loaded list." else "No registered users found.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (searchQuery.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedButton(
+                            onClick = { viewModel.searchOlderUsers(searchQuery) },
+                            modifier = Modifier.testTag("admin_search_cloud_users_button")
+                        ) {
+                            Text("Search older users on Cloud")
+                        }
+                    }
                 }
             }
         } else {
@@ -10627,6 +10653,7 @@ fun AdminUsersContent(
                         onExpandToggle = {
                             if (isExpanded) {
                                 expandedUserId = null
+                                viewModel.stopObservingAttemptsForUser(user.uid)
                             } else {
                                 expandedUserId = user.uid
                                 viewModel.loadAttemptsForUser(user.uid, user.email)

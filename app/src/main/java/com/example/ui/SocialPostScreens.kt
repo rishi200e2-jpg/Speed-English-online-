@@ -112,51 +112,47 @@ fun PostTabContent(viewModel: QuizViewModel) {
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        text = "Post",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp
-                    )
-                },
-                actions = {
-                    IconButton(
-                        onClick = { viewModel.refreshPosts() },
-                        modifier = Modifier.testTag("post_refresh_icon")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Refresh Posts"
-                        )
-                    }
-                    IconButton(
-                        onClick = {
-                            isSearchActive = !isSearchActive
-                            if (!isSearchActive) searchQuery = ""
-                        },
-                        modifier = Modifier.testTag("post_search_icon")
-                    ) {
-                        Icon(
-                            imageVector = if (isSearchActive) Icons.Default.Close else Icons.Default.Search,
-                            contentDescription = "Search Posts"
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        TopAppBar(
+            title = {
+                Text(
+                    text = "Post",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp
                 )
-            )
-        }
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .padding(innerPadding)
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
-        ) {
+            },
+            actions = {
+                IconButton(
+                    onClick = { viewModel.refreshPosts() },
+                    modifier = Modifier.testTag("post_refresh_icon")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Refresh Posts"
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        isSearchActive = !isSearchActive
+                        if (!isSearchActive) searchQuery = ""
+                    },
+                    modifier = Modifier.testTag("post_search_icon")
+                ) {
+                    Icon(
+                        imageVector = if (isSearchActive) Icons.Default.Close else Icons.Default.Search,
+                        contentDescription = "Search Posts"
+                    )
+                }
+            },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            windowInsets = WindowInsets(0, 0, 0, 0)
+        )
             if (postsSyncError != null) {
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f),
@@ -260,9 +256,9 @@ fun PostTabContent(viewModel: QuizViewModel) {
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(horizontal = 14.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
-                        contentPadding = PaddingValues(top = 10.dp, bottom = 80.dp)
+                            .padding(horizontal = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        contentPadding = PaddingValues(top = 4.dp, bottom = 12.dp)
                     ) {
                         visiblePosts.forEachIndexed { index, post ->
                             item(key = post.documentId) {
@@ -289,7 +285,6 @@ fun PostTabContent(viewModel: QuizViewModel) {
                 }
             }
         }
-    }
 
     if (fullMediaPost != null) {
         SocialMediaPreviewDialog(
@@ -317,7 +312,7 @@ fun SocialPostCard(
 ) {
     val context = LocalContext.current
     val currentUserId = viewModel.getCurrentUserId()
-    val isLiked = post.likedUserIds.contains(currentUserId)
+    val isLiked = post.likedUserIds.contains(currentUserId) || viewModel.isPostLikedByUser(post.documentId, currentUserId)
 
     // Trigger automatic view registration when this post enters screen
     LaunchedEffect(post.documentId) {
