@@ -178,4 +178,36 @@ interface QuizDao {
 
     @Query("DELETE FROM question_audit_logs")
     suspend fun clearAllAuditLogs()
+
+    // Contact Method Operations
+    @Query("SELECT * FROM contact_methods ORDER BY displayOrder ASC, createdAt ASC")
+    fun getAllContactMethodsFlow(): Flow<List<ContactMethod>>
+
+    @Query("SELECT * FROM contact_methods ORDER BY displayOrder ASC, createdAt ASC")
+    suspend fun getAllContactMethods(): List<ContactMethod>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertContactMethod(contactMethod: ContactMethod)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertContactMethods(contactMethods: List<ContactMethod>)
+
+    @Query("DELETE FROM contact_methods WHERE documentId = :id")
+    suspend fun deleteContactMethodById(id: String)
+
+    @Delete
+    suspend fun deleteContactMethod(contactMethod: ContactMethod)
+
+    @Query("DELETE FROM contact_methods")
+    suspend fun deleteAllContactMethods()
+
+    // Privacy Policy Operations
+    @Query("SELECT * FROM privacy_policy WHERE documentId = 'privacy_policy' LIMIT 1")
+    fun getPrivacyPolicyFlow(): Flow<PrivacyPolicyData?>
+
+    @Query("SELECT * FROM privacy_policy WHERE documentId = 'privacy_policy' LIMIT 1")
+    suspend fun getPrivacyPolicy(): PrivacyPolicyData?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertPrivacyPolicy(privacyPolicy: PrivacyPolicyData)
 }

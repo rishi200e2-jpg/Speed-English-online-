@@ -735,4 +735,42 @@ class QuizRepository(private val quizDao: QuizDao) {
             )
         )
     }
+
+    // Contact Method Operations
+    val allContactMethodsFlow: Flow<List<ContactMethod>> = quizDao.getAllContactMethodsFlow()
+
+    suspend fun getAllContactMethods(): List<ContactMethod> = withContext(Dispatchers.IO) {
+        quizDao.getAllContactMethods()
+    }
+
+    suspend fun insertContactMethod(contactMethod: ContactMethod) = withContext(Dispatchers.IO) {
+        quizDao.insertContactMethod(contactMethod)
+    }
+
+    suspend fun insertContactMethods(contactMethods: List<ContactMethod>) = withContext(Dispatchers.IO) {
+        quizDao.insertContactMethods(contactMethods)
+    }
+
+    suspend fun deleteContactMethodById(id: String) = withContext(Dispatchers.IO) {
+        quizDao.deleteContactMethodById(id)
+    }
+
+    suspend fun deleteContactMethod(contactMethod: ContactMethod) = withContext(Dispatchers.IO) {
+        quizDao.deleteContactMethod(contactMethod)
+    }
+
+    suspend fun deleteAllContactMethods() = withContext(Dispatchers.IO) {
+        quizDao.deleteAllContactMethods()
+    }
+
+    // Privacy Policy Operations
+    val privacyPolicyFlow: Flow<PrivacyPolicyData?> = quizDao.getPrivacyPolicyFlow()
+
+    suspend fun getPrivacyPolicy(): PrivacyPolicyData? = withContext(Dispatchers.IO) {
+        quizDao.getPrivacyPolicy()
+    }
+
+    suspend fun insertPrivacyPolicy(privacyPolicy: PrivacyPolicyData) = withContext(Dispatchers.IO) {
+        quizDao.insertPrivacyPolicy(privacyPolicy)
+    }
 }

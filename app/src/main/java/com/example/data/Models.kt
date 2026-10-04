@@ -151,7 +151,9 @@ data class ContactMethod(
     val updatedAt: Long = System.currentTimeMillis()
 )
 
+@Entity(tableName = "privacy_policy")
 data class PrivacyPolicyData(
+    @PrimaryKey val documentId: String = "privacy_policy",
     val title: String = "Privacy Policy",
     val content: String = "Welcome to Speed English! Your privacy is very important to us.\n\n" +
             "1. Information We Collect:\n" +

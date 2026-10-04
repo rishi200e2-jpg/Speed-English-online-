@@ -5,7 +5,7 @@ import androidx.room.*
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [Category::class, Quiz::class, Question::class, QuizAttempt::class, QuestionAuditLog::class], version = 21, exportSchema = false)
+@Database(entities = [Category::class, Quiz::class, Question::class, QuizAttempt::class, QuestionAuditLog::class, ContactMethod::class, PrivacyPolicyData::class], version = 22, exportSchema = false)
 abstract class QuizDatabase : RoomDatabase() {
 
     abstract fun quizDao(): QuizDao

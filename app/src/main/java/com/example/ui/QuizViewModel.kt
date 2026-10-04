@@ -597,38 +597,46 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         viewModelScope.launch(Dispatchers.IO) {
                             try {
-                                if (snapshot.documentChanges.isNotEmpty()) {
-                                    snapshot.documentChanges.forEach { change ->
-                                        val doc = change.document
-                                        val catId = doc.id
-                                        when (change.type) {
-                                            com.google.firebase.firestore.DocumentChange.Type.ADDED,
-                                            com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
-                                                val isDraftVal = doc.getBoolean("isDraft") ?: false
-                                                val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
-                                                val cat = Category(
-                                                    documentId = catId,
-                                                    name = doc.getString("name") ?: "",
-                                                    description = doc.getString("description") ?: "",
-                                                    iconName = doc.getString("iconName") ?: "general",
-                                                    isDraft = isDraftVal,
-                                                    status = statusVal,
-                                                    parentCategoryId = doc.getString("parentCategoryId"),
-                                                    createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
-                                                    updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
-                                                )
-                                                repository.insertCategory(cat)
-                                            }
-                                            com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
-                                                repository.getCategoryById(catId)?.let { repository.deleteCategory(it) }
-                                            }
+                                snapshot.documentChanges.forEach { change ->
+                                    val doc = change.document
+                                    val catId = doc.id
+                                    when (change.type) {
+                                        com.google.firebase.firestore.DocumentChange.Type.ADDED,
+                                        com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
+                                            val isDraftVal = doc.getBoolean("isDraft") ?: false
+                                            val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
+                                            val cat = Category(
+                                                documentId = catId,
+                                                name = doc.getString("name") ?: "",
+                                                description = doc.getString("description") ?: "",
+                                                iconName = doc.getString("iconName") ?: "general",
+                                                isDraft = isDraftVal,
+                                                status = statusVal,
+                                                parentCategoryId = doc.getString("parentCategoryId"),
+                                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                                                updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
+                                            )
+                                            repository.insertCategory(cat)
+                                        }
+                                        com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
+                                            repository.getCategoryById(catId)?.let { repository.deleteCategory(it) }
                                         }
                                     }
-                                    _lastSyncTime.value = System.currentTimeMillis()
-                                    sharedPrefs.edit().putLong("last_sync_time", _lastSyncTime.value).apply()
-                                    logFirestore("Categories synchronized live (${snapshot.documentChanges.size} changes).")
-                                    triggerRealtimeSyncReload()
                                 }
+
+                                // Prune deleted categories from Room to fix initial sync gap
+                                val remoteCatIds = snapshot.documents.map { it.id }.toSet()
+                                val localCategories = repository.getAllCategories()
+                                localCategories.forEach { localCat ->
+                                    if (localCat.documentId !in remoteCatIds) {
+                                        repository.deleteCategory(localCat)
+                                    }
+                                }
+
+                                _lastSyncTime.value = System.currentTimeMillis()
+                                sharedPrefs.edit().putLong("last_sync_time", _lastSyncTime.value).apply()
+                                logFirestore("Categories synchronized live (${snapshot.documentChanges.size} changes).")
+                                triggerRealtimeSyncReload()
                             } catch (e: Exception) {
                                 Log.e("QuizViewModel", "Error in categories sync: ${e.message}", e)
                             }
@@ -664,45 +672,54 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         viewModelScope.launch(Dispatchers.IO) {
                             try {
-                                if (snapshot.documentChanges.isNotEmpty()) {
-                                    snapshot.documentChanges.forEach { change ->
-                                        val doc = change.document
-                                        val quizId = doc.id
-                                        when (change.type) {
-                                            com.google.firebase.firestore.DocumentChange.Type.ADDED,
-                                            com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
-                                                val isDraftVal = doc.getBoolean("isDraft") ?: false
-                                                val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
-                                                val existingQuiz = repository.getQuizById(quizId)
-                                                val firestoreSort = doc.getLong("sortOrder")?.toInt()
-                                                val sortOrderVal = firestoreSort ?: existingQuiz?.sortOrder ?: 0
-                                                val quiz = Quiz(
-                                                    documentId = quizId,
-                                                    categoryId = doc.getString("categoryId") ?: "",
-                                                    title = doc.getString("title") ?: "",
-                                                    description = doc.getString("description") ?: "",
-                                                    timeLimitSeconds = doc.getLong("timeLimitSeconds")?.toInt() ?: 20,
-                                                    isDraft = isDraftVal,
-                                                    status = statusVal,
-                                                    version = doc.getLong("version")?.toInt() ?: 1,
-                                                    shuffleQuestions = doc.getBoolean("shuffleQuestions") ?: false,
-                                                    marksPerQuestion = doc.getDouble("marksPerQuestion")?.toFloat() ?: 1.0f,
-                                                    negativeMarking = doc.getDouble("negativeMarking")?.toFloat() ?: 0.0f,
-                                                    sortOrder = sortOrderVal,
-                                                    createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
-                                                    updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis(),
-                                                    publishedAt = doc.getLong("publishedAt")
-                                                )
-                                                repository.insertQuiz(quiz)
-                                            }
-                                            com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
-                                                repository.getQuizById(quizId)?.let { repository.deleteQuiz(it) }
-                                            }
+                                snapshot.documentChanges.forEach { change ->
+                                    val doc = change.document
+                                    val quizId = doc.id
+                                    when (change.type) {
+                                        com.google.firebase.firestore.DocumentChange.Type.ADDED,
+                                        com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
+                                            val isDraftVal = doc.getBoolean("isDraft") ?: false
+                                            val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
+                                            val existingQuiz = repository.getQuizById(quizId)
+                                            val firestoreSort = doc.getLong("sortOrder")?.toInt()
+                                            val sortOrderVal = firestoreSort ?: existingQuiz?.sortOrder ?: 0
+                                            val quiz = Quiz(
+                                                documentId = quizId,
+                                                categoryId = doc.getString("categoryId") ?: "",
+                                                title = doc.getString("title") ?: "",
+                                                description = doc.getString("description") ?: "",
+                                                timeLimitSeconds = doc.getLong("timeLimitSeconds")?.toInt() ?: 20,
+                                                isDraft = isDraftVal,
+                                                status = statusVal,
+                                                version = doc.getLong("version")?.toInt() ?: 1,
+                                                shuffleQuestions = doc.getBoolean("shuffleQuestions") ?: false,
+                                                marksPerQuestion = doc.getDouble("marksPerQuestion")?.toFloat() ?: 1.0f,
+                                                negativeMarking = doc.getDouble("negativeMarking")?.toFloat() ?: 0.0f,
+                                                sortOrder = sortOrderVal,
+                                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                                                updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis(),
+                                                publishedAt = doc.getLong("publishedAt")
+                                            )
+                                            repository.insertQuiz(quiz)
+                                        }
+                                        com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
+                                            repository.getQuizById(quizId)?.let { repository.deleteQuiz(it) }
                                         }
                                     }
-                                    logFirestore("Quizzes synchronized live (${snapshot.documentChanges.size} changes).")
-                                    triggerRealtimeSyncReload()
                                 }
+
+                                // Prune deleted quizzes from Room to fix initial sync gap
+                                val remoteQuizIds = snapshot.documents.map { it.id }.toSet()
+                                val localQuizzes = repository.getAllQuizzes()
+                                localQuizzes.forEach { localQuiz ->
+                                    val isPublished = localQuiz.status == "published" || !localQuiz.isDraft
+                                    if (localQuiz.documentId !in remoteQuizIds && (isAdmin || isPublished)) {
+                                        repository.deleteQuiz(localQuiz)
+                                    }
+                                }
+
+                                logFirestore("Quizzes synchronized live (${snapshot.documentChanges.size} changes).")
+                                triggerRealtimeSyncReload()
                             } catch (e: Exception) {
                                 Log.e("QuizViewModel", "Error in quizzes sync: ${e.message}", e)
                             }
@@ -729,39 +746,47 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                         
                         viewModelScope.launch(Dispatchers.IO) {
                             try {
-                                if (snapshot.documentChanges.isNotEmpty()) {
-                                    snapshot.documentChanges.forEach { change ->
-                                        val doc = change.document
-                                        val questionId = doc.id
-                                        when (change.type) {
-                                            com.google.firebase.firestore.DocumentChange.Type.ADDED,
-                                            com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
-                                                val q = Question(
-                                                    documentId = questionId,
-                                                    quizId = doc.getString("quizId") ?: "",
-                                                    text = doc.getString("text") ?: "",
-                                                    optionA = doc.getString("optionA") ?: "",
-                                                    optionB = doc.getString("optionB") ?: "",
-                                                    optionC = doc.getString("optionC") ?: "",
-                                                    optionD = doc.getString("optionD") ?: "",
-                                                    correctOption = doc.getString("correctOption") ?: "A",
-                                                    explanation = doc.getString("explanation") ?: "",
-                                                    version = doc.getLong("version")?.toInt() ?: 1,
-                                                    createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
-                                                    updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
-                                                )
-                                                repository.insertQuestion(q)
-                                            }
-                                            com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
-                                                repository.deleteQuestionById(questionId)
-                                            }
+                                snapshot.documentChanges.forEach { change ->
+                                    val doc = change.document
+                                    val questionId = doc.id
+                                    when (change.type) {
+                                        com.google.firebase.firestore.DocumentChange.Type.ADDED,
+                                        com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
+                                            val q = Question(
+                                                documentId = questionId,
+                                                quizId = doc.getString("quizId") ?: "",
+                                                text = doc.getString("text") ?: "",
+                                                optionA = doc.getString("optionA") ?: "",
+                                                optionB = doc.getString("optionB") ?: "",
+                                                optionC = doc.getString("optionC") ?: "",
+                                                optionD = doc.getString("optionD") ?: "",
+                                                correctOption = doc.getString("correctOption") ?: "A",
+                                                explanation = doc.getString("explanation") ?: "",
+                                                version = doc.getLong("version")?.toInt() ?: 1,
+                                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                                                updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
+                                            )
+                                            repository.insertQuestion(q)
+                                        }
+                                        com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
+                                            repository.deleteQuestionById(questionId)
                                         }
                                     }
-                                    _lastSyncTime.value = System.currentTimeMillis()
-                                    sharedPrefs.edit().putLong("last_sync_time", _lastSyncTime.value).apply()
-                                    logFirestore("Questions synchronized live (${snapshot.documentChanges.size} changes).")
-                                    triggerRealtimeSyncReload()
                                 }
+
+                                // Prune deleted questions from Room to fix initial sync gap
+                                val remoteQuestionIds = snapshot.documents.map { it.id }.toSet()
+                                val localQuestions = repository.getAllQuestions()
+                                localQuestions.forEach { localQ ->
+                                    if (localQ.documentId !in remoteQuestionIds && localQ.quizId.isNotEmpty()) {
+                                        repository.deleteQuestionById(localQ.documentId)
+                                    }
+                                }
+
+                                _lastSyncTime.value = System.currentTimeMillis()
+                                sharedPrefs.edit().putLong("last_sync_time", _lastSyncTime.value).apply()
+                                logFirestore("Questions synchronized live (${snapshot.documentChanges.size} changes).")
+                                triggerRealtimeSyncReload()
                             } catch (e: Exception) {
                                 Log.e("QuizViewModel", "Error in questions sync: ${e.message}", e)
                             }
@@ -4076,12 +4101,24 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     fun startObservingContactMethodsAndPrivacyPolicy() {
         val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
 
-        if (_contactMethods.value.isEmpty()) {
-            seedDefaultContactMethods()
+        // Bind flows directly to the Room database local cache
+        viewModelScope.launch {
+            repository.allContactMethodsFlow.collect { localList ->
+                _contactMethods.value = localList
+            }
         }
-        if (_privacyPolicy.value.content.isBlank()) {
-            seedDefaultPrivacyPolicy()
+
+        viewModelScope.launch {
+            repository.privacyPolicyFlow.collect { localPolicy ->
+                if (localPolicy != null) {
+                    _privacyPolicy.value = localPolicy
+                }
+            }
         }
+
+        // Seed defaults locally if empty
+        seedDefaultContactMethods()
+        seedDefaultPrivacyPolicy()
 
         if (contactMethodsListenerRegistration == null) {
             contactMethodsListenerRegistration = firestore.collection("contact_methods")
@@ -4091,24 +4128,44 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                         return@addSnapshotListener
                     }
                     if (snapshot != null) {
-                        val items = snapshot.documents.mapNotNull { doc ->
+                        viewModelScope.launch(Dispatchers.IO) {
                             try {
-                                com.example.data.ContactMethod(
-                                    documentId = doc.id,
-                                    platform = doc.getString("platform") ?: "Website",
-                                    title = doc.getString("title") ?: "",
-                                    description = doc.getString("description") ?: "",
-                                    value = doc.getString("value") ?: "",
-                                    displayOrder = doc.getLong("displayOrder")?.toInt() ?: 0,
-                                    isEnabled = doc.getBoolean("isEnabled") ?: true,
-                                    createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
-                                    updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
-                                )
-                            } catch (e: Exception) { null }
-                        }.sortedBy { it.displayOrder }
+                                snapshot.documentChanges.forEach { change ->
+                                    val doc = change.document
+                                    val documentId = doc.id
+                                    when (change.type) {
+                                        com.google.firebase.firestore.DocumentChange.Type.ADDED,
+                                        com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
+                                            val item = com.example.data.ContactMethod(
+                                                documentId = documentId,
+                                                platform = doc.getString("platform") ?: "Website",
+                                                title = doc.getString("title") ?: "",
+                                                description = doc.getString("description") ?: "",
+                                                value = doc.getString("value") ?: "",
+                                                displayOrder = doc.getLong("displayOrder")?.toInt() ?: 0,
+                                                isEnabled = doc.getBoolean("isEnabled") ?: true,
+                                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                                                updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
+                                            )
+                                            repository.insertContactMethod(item)
+                                        }
+                                        com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
+                                            repository.deleteContactMethodById(documentId)
+                                        }
+                                    }
+                                }
 
-                        if (items.isNotEmpty()) {
-                            _contactMethods.value = items
+                                // Prune deleted contact methods from Room to fix initial sync gap
+                                val remoteIds = snapshot.documents.map { it.id }.toSet()
+                                val localItems = repository.getAllContactMethods()
+                                localItems.forEach { localItem ->
+                                    if (localItem.documentId !in remoteIds) {
+                                        repository.deleteContactMethodById(localItem.documentId)
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Log.e("QuizViewModel", "Error syncing contact methods to Room: ${e.message}", e)
+                            }
                         }
                     }
                 }
@@ -4121,18 +4178,35 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                         Log.e("QuizViewModel", "Error in privacy_policy sync: ${error.message}")
                         return@addSnapshotListener
                     }
-                    if (snapshot != null && snapshot.exists()) {
-                        val title = snapshot.getString("title") ?: "Privacy Policy"
-                        val content = snapshot.getString("content") ?: ""
-                        val updatedAt = snapshot.getLong("updatedAt") ?: System.currentTimeMillis()
-                        _privacyPolicy.value = com.example.data.PrivacyPolicyData(title = title, content = content, updatedAt = updatedAt)
+                    if (snapshot != null) {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            try {
+                                if (snapshot.exists()) {
+                                    val title = snapshot.getString("title") ?: "Privacy Policy"
+                                    val content = snapshot.getString("content") ?: ""
+                                    val updatedAt = snapshot.getLong("updatedAt") ?: System.currentTimeMillis()
+                                    val policy = com.example.data.PrivacyPolicyData(
+                                        documentId = "privacy_policy",
+                                        title = title,
+                                        content = content,
+                                        updatedAt = updatedAt
+                                    )
+                                    repository.insertPrivacyPolicy(policy)
+                                } else {
+                                    // If deleted from Firestore, we can revert to default seed policy
+                                    val defaultPolicy = com.example.data.PrivacyPolicyData(documentId = "privacy_policy")
+                                    repository.insertPrivacyPolicy(defaultPolicy)
+                                }
+                            } catch (e: Exception) {
+                                Log.e("QuizViewModel", "Error syncing privacy policy to Room: ${e.message}", e)
+                            }
+                        }
                     }
                 }
         }
     }
 
     private fun seedDefaultContactMethods() {
-        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
         val defaultContacts = listOf(
             com.example.data.ContactMethod(
                 documentId = "cm_whatsapp",
@@ -4171,45 +4245,26 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 isEnabled = true
             )
         )
-        _contactMethods.value = defaultContacts
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val batch = firestore.batch()
-                defaultContacts.forEach { contact ->
-                    val ref = firestore.collection("contact_methods").document(contact.documentId)
-                    val data = mapOf(
-                        "platform" to contact.platform,
-                        "title" to contact.title,
-                        "description" to contact.description,
-                        "value" to contact.value,
-                        "displayOrder" to contact.displayOrder,
-                        "isEnabled" to contact.isEnabled,
-                        "createdAt" to contact.createdAt,
-                        "updatedAt" to contact.updatedAt
-                    )
-                    batch.set(ref, data)
+                if (repository.getAllContactMethods().isEmpty()) {
+                    repository.insertContactMethods(defaultContacts)
                 }
-                batch.commit()
             } catch (e: Exception) {
-                Log.e("QuizViewModel", "Error seeding default contact methods: ${e.message}")
+                Log.e("QuizViewModel", "Error seeding default contact methods locally: ${e.message}")
             }
         }
     }
 
     private fun seedDefaultPrivacyPolicy() {
-        val defaultPolicy = com.example.data.PrivacyPolicyData()
-        _privacyPolicy.value = defaultPolicy
+        val defaultPolicy = com.example.data.PrivacyPolicyData(documentId = "privacy_policy")
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                val data = mapOf(
-                    "title" to defaultPolicy.title,
-                    "content" to defaultPolicy.content,
-                    "updatedAt" to defaultPolicy.updatedAt
-                )
-                firestore.collection("app_config").document("privacy_policy").set(data)
+                if (repository.getPrivacyPolicy() == null) {
+                    repository.insertPrivacyPolicy(defaultPolicy)
+                }
             } catch (e: Exception) {
-                Log.e("QuizViewModel", "Error seeding default privacy policy: ${e.message}")
+                Log.e("QuizViewModel", "Error seeding default privacy policy locally: ${e.message}")
             }
         }
     }
