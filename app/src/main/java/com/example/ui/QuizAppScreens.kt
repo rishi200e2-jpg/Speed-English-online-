@@ -5655,51 +5655,61 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                                 } catch (e: Exception) {
                                                     e.printStackTrace()
                                                 }
-                                            }
 
-                                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                                isPosting = false
-                                                val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                                    type = "image/*"
-                                                    putExtra(android.content.Intent.EXTRA_STREAM, reportImageUri)
-                                                    putExtra(android.content.Intent.EXTRA_TEXT, shareText)
-                                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-
-                                                    if (isTelegram) {
-                                                        setPackage("org.telegram.messenger")
-                                                    } else if (isFacebook) {
-                                                        setPackage("com.facebook.katana")
+                                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                    isPosting = false
+                                                    try {
+                                                        val browserIntent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(destination.url)).apply {
+                                                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                        }
+                                                        context.startActivity(browserIntent)
+                                                    } catch (e: Exception) {
+                                                        android.widget.Toast.makeText(context, "Unable to open Facebook destination: ${destination.url}", android.widget.Toast.LENGTH_LONG).show()
                                                     }
                                                 }
+                                            } else {
+                                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                    isPosting = false
+                                                    val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                                        type = "image/*"
+                                                        putExtra(android.content.Intent.EXTRA_STREAM, reportImageUri)
+                                                        putExtra(android.content.Intent.EXTRA_TEXT, shareText)
+                                                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
 
-                                                try {
-                                                    context.startActivity(shareIntent)
-                                                } catch (e: Exception) {
-                                                    // Fallback 1: Generic Chooser with local scorecard image
-                                                    try {
-                                                        val chooser = android.content.Intent.createChooser(
-                                                            android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                                                type = "image/*"
-                                                                putExtra(android.content.Intent.EXTRA_STREAM, reportImageUri)
-                                                                putExtra(android.content.Intent.EXTRA_TEXT, shareText)
-                                                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                                            },
-                                                            "Share Scorecard to ${if (isTelegram) "Telegram" else "Facebook"}"
-                                                        ).apply {
-                                                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                        if (isTelegram) {
+                                                            setPackage("org.telegram.messenger")
                                                         }
-                                                        context.startActivity(chooser)
-                                                    } catch (e2: Exception) {
-                                                        // Fallback 2: Direct browser opening of configured Group URL
+                                                    }
+
+                                                    try {
+                                                        context.startActivity(shareIntent)
+                                                    } catch (e: Exception) {
+                                                        // Fallback 1: Generic Chooser with local scorecard image
                                                         try {
-                                                            val browserIntent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(destination.url)).apply {
+                                                            val chooser = android.content.Intent.createChooser(
+                                                                android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                                                    type = "image/*"
+                                                                    putExtra(android.content.Intent.EXTRA_STREAM, reportImageUri)
+                                                                    putExtra(android.content.Intent.EXTRA_TEXT, shareText)
+                                                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                                },
+                                                                "Share Scorecard to Telegram"
+                                                            ).apply {
                                                                 addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                                             }
-                                                            context.startActivity(browserIntent)
-                                                        } catch (e3: Exception) {
-                                                            android.widget.Toast.makeText(context, "Unable to open destination: ${destination.url}", android.widget.Toast.LENGTH_LONG).show()
+                                                            context.startActivity(chooser)
+                                                        } catch (e2: Exception) {
+                                                            // Fallback 2: Direct browser opening of configured Group URL
+                                                            try {
+                                                                val browserIntent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(destination.url)).apply {
+                                                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                                }
+                                                                context.startActivity(browserIntent)
+                                                            } catch (e3: Exception) {
+                                                                android.widget.Toast.makeText(context, "Unable to open destination: ${destination.url}", android.widget.Toast.LENGTH_LONG).show()
+                                                            }
                                                         }
                                                     }
                                                 }
