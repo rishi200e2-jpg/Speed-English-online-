@@ -280,6 +280,13 @@ fun PostTabContent(viewModel: QuizViewModel) {
                                     )
                                 }
                             }
+                            if (index == visiblePosts.size - 1) {
+                                item(key = "pagination_trigger") {
+                                    LaunchedEffect(index) {
+                                        viewModel.loadNextPostsPage()
+                                    }
+                                }
+                            }
                         }
                     }
                 }

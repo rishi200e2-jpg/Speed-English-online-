@@ -555,246 +555,182 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         com.example.data.FirestoreLoggingInterceptor.clearLogs()
     }
 
+    fun incrementGlobalContentVersion() {
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        val docRef = firestore.collection("content_metadata").document("global")
+        docRef.get().addOnSuccessListener { snapshot ->
+            val nextVersion = if (snapshot.exists()) {
+                (snapshot.getLong("contentVersion") ?: 0L) + 1
+            } else {
+                1L
+            }
+            docRef.set(
+                mapOf(
+                    "contentVersion" to nextVersion,
+                    "updatedAt" to System.currentTimeMillis()
+                )
+            ).addOnSuccessListener {
+                Log.d("QuizViewModel", "Successfully incremented global content version to $nextVersion")
+            }.addOnFailureListener { e ->
+                Log.e("QuizViewModel", "Error setting content version: ${e.message}")
+            }
+        }.addOnFailureListener {
+            docRef.set(
+                mapOf(
+                    "contentVersion" to 1L,
+                    "updatedAt" to System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
+    fun synchronizeContentIfNeeded(force: Boolean = false, onComplete: (Boolean) -> Unit = {}) {
+        if (!_isNetworkAvailable.value) {
+            logFirestore("Offline mode: Skipping content version check.")
+            onComplete(false)
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        val lastCheckTime = sharedPrefs.getLong("last_version_check_time", 0L)
+        val fiveMinutesMs = 5 * 60 * 1000L
+
+        if (!force && (now - lastCheckTime < fiveMinutesMs) && sharedPrefs.getLong("local_content_version", 0L) > 0L) {
+            Log.d("QuizViewModel", "Content version check throttled (< 5 mins elapsed). Using Room cache.")
+            onComplete(true)
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                val metaDoc = try {
+                    com.google.android.gms.tasks.Tasks.await(
+                        firestore.collection("content_metadata").document("global").get()
+                    )
+                } catch (e: Exception) {
+                    null
+                }
+                
+                val serverVersion = metaDoc?.getLong("contentVersion") ?: 0L
+                val localVersion = sharedPrefs.getLong("local_content_version", 0L)
+
+                Log.d("QuizViewModel", "Content version check: server=$serverVersion, local=$localVersion")
+
+                if (serverVersion != localVersion || localVersion == 0L || force) {
+                    _syncStatusMessage.value = "Content update available. Synchronizing..."
+                    logFirestore("Content version mismatch (Server: $serverVersion, Local: $localVersion). Downloading update...")
+
+                    // 1. One-time fetch of categories
+                    val categoriesSnap = com.google.android.gms.tasks.Tasks.await(
+                        firestore.collection("categories").get()
+                    )
+                    val remoteCategories = categoriesSnap.documents.mapNotNull { doc ->
+                        try {
+                            val isDraftVal = doc.getBoolean("isDraft") ?: false
+                            val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
+                            Category(
+                                documentId = doc.id,
+                                name = doc.getString("name") ?: "",
+                                description = doc.getString("description") ?: "",
+                                iconName = doc.getString("iconName") ?: "general",
+                                isDraft = isDraftVal,
+                                status = statusVal,
+                                parentCategoryId = doc.getString("parentCategoryId"),
+                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                                updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
+                            )
+                        } catch (e: Exception) { null }
+                    }
+
+                    // 2. One-time fetch of quizzes
+                    val quizzesSnap = com.google.android.gms.tasks.Tasks.await(
+                        firestore.collection("quizzes").get()
+                    )
+                    val remoteQuizzes = quizzesSnap.documents.mapNotNull { doc ->
+                        try {
+                            val isDraftVal = doc.getBoolean("isDraft") ?: false
+                            val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
+                            Quiz(
+                                documentId = doc.id,
+                                categoryId = doc.getString("categoryId") ?: "",
+                                title = doc.getString("title") ?: "",
+                                description = doc.getString("description") ?: "",
+                                timeLimitSeconds = doc.getLong("timeLimitSeconds")?.toInt() ?: 20,
+                                isDraft = isDraftVal,
+                                status = statusVal,
+                                version = doc.getLong("version")?.toInt() ?: 1,
+                                shuffleQuestions = doc.getBoolean("shuffleQuestions") ?: false,
+                                marksPerQuestion = doc.getDouble("marksPerQuestion")?.toFloat() ?: 1.0f,
+                                negativeMarking = doc.getDouble("negativeMarking")?.toFloat() ?: 0.0f,
+                                questionCount = doc.getLong("questionCount")?.toInt() ?: 0,
+                                sortOrder = doc.getLong("sortOrder")?.toInt() ?: 0,
+                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                                updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis(),
+                                publishedAt = doc.getLong("publishedAt")
+                            )
+                        } catch (e: Exception) { null }
+                    }
+
+                    // 3. One-time fetch of questions
+                    val questionsSnap = com.google.android.gms.tasks.Tasks.await(
+                        firestore.collection("questions").get()
+                    )
+                    val remoteQuestions = questionsSnap.documents.mapNotNull { doc ->
+                        try {
+                            Question(
+                                documentId = doc.id,
+                                quizId = doc.getString("quizId") ?: "",
+                                text = doc.getString("text") ?: "",
+                                optionA = doc.getString("optionA") ?: "",
+                                optionB = doc.getString("optionB") ?: "",
+                                optionC = doc.getString("optionC") ?: "",
+                                optionD = doc.getString("optionD") ?: "",
+                                correctOption = doc.getString("correctOption") ?: "A",
+                                explanation = doc.getString("explanation") ?: "",
+                                version = doc.getLong("version")?.toInt() ?: 1,
+                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+                                updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
+                            )
+                        } catch (e: Exception) { null }
+                    }
+
+                    // Transactionally update Room
+                    repository.clearAndRestoreData(remoteCategories, remoteQuizzes, remoteQuestions)
+
+                    // Update local version
+                    sharedPrefs.edit().putLong("local_content_version", serverVersion).apply()
+
+                    logFirestore("Synchronization complete. Room updated to contentVersion $serverVersion.")
+                    _syncStatusMessage.value = "All content up-to-date."
+                } else {
+                    logFirestore("Content up-to-date (Version: $localVersion). Loaded from Room Cache.")
+                }
+                
+                sharedPrefs.edit().putLong("last_version_check_time", now).apply()
+                updateQuizQuestionsCounts()
+                withContext(Dispatchers.Main) {
+                    onComplete(true)
+                }
+            } catch (e: Exception) {
+                Log.e("QuizViewModel", "Error syncing content: ${e.message}", e)
+                logFirestore("Synchronization failed: ${e.message}. Using previous local Room cache.")
+                withContext(Dispatchers.Main) {
+                    onComplete(false)
+                }
+            }
+        }
+    }
+
     fun startRealtimeFirestoreSync(forceRestart: Boolean = false) {
         if (!_isNetworkAvailable.value) {
             logFirestore("Offline mode active. Using local Room cache.")
             return
         }
-        
-        if (forceRestart) {
-            categoriesListenerRegistration?.remove()
-            quizzesListenerRegistration?.remove()
-            categoriesListenerRegistration = null
-            quizzesListenerRegistration = null
-        } else if (categoriesListenerRegistration != null && quizzesListenerRegistration != null) {
-            logFirestore("Real-time live sync already active.")
-            return
-        }
-
-        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
         _isLiveSyncing.value = true
-        logFirestore("Initializing live synchronization...")
-
-        // 1. Listen to Categories
-        if (categoriesListenerRegistration == null) {
-            categoriesListenerRegistration = firestore.collection("categories")
-                .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
-                    val startTime = System.currentTimeMillis()
-                    if (error != null) {
-                        Log.e("QuizViewModel", "Categories sync error: ${error.message}", error)
-                        logFirestore("Categories sync error: ${error.message}")
-                        com.example.data.FirestoreLoggingInterceptor.logRead("categories", 0, "ERROR", 0, false, error.message)
-                        return@addSnapshotListener
-                    }
-                    if (snapshot != null) {
-                        val isFromCache = snapshot.metadata.isFromCache
-                        val hasPendingWrites = snapshot.metadata.hasPendingWrites()
-                        val latency = System.currentTimeMillis() - startTime
-                        com.example.data.FirestoreLoggingInterceptor.logListenerEvent("categories", snapshot.size(), hasPendingWrites, isFromCache, latency)
-                        
-                        if (hasPendingWrites) {
-                            Log.d("QuizViewModel", "Local write pending for categories (instant cache emit)")
-                        }
-                        viewModelScope.launch(Dispatchers.IO) {
-                            try {
-                                snapshot.documentChanges.forEach { change ->
-                                    val doc = change.document
-                                    val catId = doc.id
-                                    when (change.type) {
-                                        com.google.firebase.firestore.DocumentChange.Type.ADDED,
-                                        com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
-                                            val isDraftVal = doc.getBoolean("isDraft") ?: false
-                                            val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
-                                            val cat = Category(
-                                                documentId = catId,
-                                                name = doc.getString("name") ?: "",
-                                                description = doc.getString("description") ?: "",
-                                                iconName = doc.getString("iconName") ?: "general",
-                                                isDraft = isDraftVal,
-                                                status = statusVal,
-                                                parentCategoryId = doc.getString("parentCategoryId"),
-                                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
-                                                updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
-                                            )
-                                            repository.insertCategory(cat)
-                                        }
-                                        com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
-                                            repository.getCategoryById(catId)?.let { repository.deleteCategory(it) }
-                                        }
-                                    }
-                                }
-
-                                // Prune deleted categories from Room to fix initial sync gap
-                                val remoteCatIds = snapshot.documents.map { it.id }.toSet()
-                                val localCategories = repository.getAllCategories()
-                                localCategories.forEach { localCat ->
-                                    if (localCat.documentId !in remoteCatIds) {
-                                        repository.deleteCategory(localCat)
-                                    }
-                                }
-
-                                _lastSyncTime.value = System.currentTimeMillis()
-                                sharedPrefs.edit().putLong("last_sync_time", _lastSyncTime.value).apply()
-                                logFirestore("Categories synchronized live (${snapshot.documentChanges.size} changes).")
-                                triggerRealtimeSyncReload()
-                            } catch (e: Exception) {
-                                Log.e("QuizViewModel", "Error in categories sync: ${e.message}", e)
-                            }
-                        }
-                    }
-                }
+        synchronizeContentIfNeeded(force = forceRestart) { success ->
+            _isLiveSyncing.value = false
         }
-
-        // 2. Listen to Quizzes (Admin: all quizzes; Regular users: published quizzes only)
-        if (quizzesListenerRegistration == null) {
-            val isAdmin = isCurrentUserAdmin()
-            val quizzesQuery: com.google.firebase.firestore.Query = if (isAdmin) {
-                firestore.collection("quizzes")
-            } else {
-                firestore.collection("quizzes").whereEqualTo("status", "published")
-            }
-            quizzesListenerRegistration = quizzesQuery
-                .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
-                    val startTime = System.currentTimeMillis()
-                    if (error != null) {
-                        Log.e("QuizViewModel", "Quizzes sync error: ${error.message}", error)
-                        com.example.data.FirestoreLoggingInterceptor.logRead("quizzes", 0, "ERROR", 0, false, error.message)
-                        return@addSnapshotListener
-                    }
-                    if (snapshot != null) {
-                        val isFromCache = snapshot.metadata.isFromCache
-                        val hasPendingWrites = snapshot.metadata.hasPendingWrites()
-                        val latency = System.currentTimeMillis() - startTime
-                        com.example.data.FirestoreLoggingInterceptor.logListenerEvent("quizzes", snapshot.size(), hasPendingWrites, isFromCache, latency)
-                        
-                        if (hasPendingWrites) {
-                            Log.d("QuizViewModel", "Local write pending for quizzes (instant cache emit)")
-                        }
-                        viewModelScope.launch(Dispatchers.IO) {
-                            try {
-                                snapshot.documentChanges.forEach { change ->
-                                    val doc = change.document
-                                    val quizId = doc.id
-                                    when (change.type) {
-                                        com.google.firebase.firestore.DocumentChange.Type.ADDED,
-                                        com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
-                                            val isDraftVal = doc.getBoolean("isDraft") ?: false
-                                            val statusVal = doc.getString("status") ?: if (isDraftVal) "draft" else "published"
-                                            val existingQuiz = repository.getQuizById(quizId)
-                                            val firestoreSort = doc.getLong("sortOrder")?.toInt()
-                                            val sortOrderVal = firestoreSort ?: existingQuiz?.sortOrder ?: 0
-                                            val quiz = Quiz(
-                                                documentId = quizId,
-                                                categoryId = doc.getString("categoryId") ?: "",
-                                                title = doc.getString("title") ?: "",
-                                                description = doc.getString("description") ?: "",
-                                                timeLimitSeconds = doc.getLong("timeLimitSeconds")?.toInt() ?: 20,
-                                                isDraft = isDraftVal,
-                                                status = statusVal,
-                                                version = doc.getLong("version")?.toInt() ?: 1,
-                                                shuffleQuestions = doc.getBoolean("shuffleQuestions") ?: false,
-                                                marksPerQuestion = doc.getDouble("marksPerQuestion")?.toFloat() ?: 1.0f,
-                                                negativeMarking = doc.getDouble("negativeMarking")?.toFloat() ?: 0.0f,
-                                                sortOrder = sortOrderVal,
-                                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
-                                                updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis(),
-                                                publishedAt = doc.getLong("publishedAt")
-                                            )
-                                            repository.insertQuiz(quiz)
-                                        }
-                                        com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
-                                            repository.getQuizById(quizId)?.let { repository.deleteQuiz(it) }
-                                        }
-                                    }
-                                }
-
-                                // Prune deleted quizzes from Room to fix initial sync gap
-                                val remoteQuizIds = snapshot.documents.map { it.id }.toSet()
-                                val localQuizzes = repository.getAllQuizzes()
-                                localQuizzes.forEach { localQuiz ->
-                                    val isPublished = localQuiz.status == "published" || !localQuiz.isDraft
-                                    if (localQuiz.documentId !in remoteQuizIds && (isAdmin || isPublished)) {
-                                        repository.deleteQuiz(localQuiz)
-                                    }
-                                }
-
-                                logFirestore("Quizzes synchronized live (${snapshot.documentChanges.size} changes).")
-                                triggerRealtimeSyncReload()
-                            } catch (e: Exception) {
-                                Log.e("QuizViewModel", "Error in quizzes sync: ${e.message}", e)
-                            }
-                        }
-                    }
-                }
-        }
-
-        // 3. Questions (Real-time listener on top-level questions collection for all users to guarantee instant updates/deletions sync)
-        if (questionsListenerRegistration == null) {
-            questionsListenerRegistration = firestore.collection("questions")
-                .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
-                    val startTime = System.currentTimeMillis()
-                    if (error != null) {
-                        Log.e("QuizViewModel", "Questions sync error: ${error.message}", error)
-                        logFirestore("Questions sync error: ${error.message}")
-                        return@addSnapshotListener
-                    }
-                    if (snapshot != null) {
-                        val isFromCache = snapshot.metadata.isFromCache
-                        val hasPendingWrites = snapshot.metadata.hasPendingWrites()
-                        val latency = System.currentTimeMillis() - startTime
-                        com.example.data.FirestoreLoggingInterceptor.logListenerEvent("questions", snapshot.size(), hasPendingWrites, isFromCache, latency)
-                        
-                        viewModelScope.launch(Dispatchers.IO) {
-                            try {
-                                snapshot.documentChanges.forEach { change ->
-                                    val doc = change.document
-                                    val questionId = doc.id
-                                    when (change.type) {
-                                        com.google.firebase.firestore.DocumentChange.Type.ADDED,
-                                        com.google.firebase.firestore.DocumentChange.Type.MODIFIED -> {
-                                            val q = Question(
-                                                documentId = questionId,
-                                                quizId = doc.getString("quizId") ?: "",
-                                                text = doc.getString("text") ?: "",
-                                                optionA = doc.getString("optionA") ?: "",
-                                                optionB = doc.getString("optionB") ?: "",
-                                                optionC = doc.getString("optionC") ?: "",
-                                                optionD = doc.getString("optionD") ?: "",
-                                                correctOption = doc.getString("correctOption") ?: "A",
-                                                explanation = doc.getString("explanation") ?: "",
-                                                version = doc.getLong("version")?.toInt() ?: 1,
-                                                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
-                                                updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
-                                            )
-                                            repository.insertQuestion(q)
-                                        }
-                                        com.google.firebase.firestore.DocumentChange.Type.REMOVED -> {
-                                            repository.deleteQuestionById(questionId)
-                                        }
-                                    }
-                                }
-
-                                // Prune deleted questions from Room to fix initial sync gap
-                                val remoteQuestionIds = snapshot.documents.map { it.id }.toSet()
-                                val localQuestions = repository.getAllQuestions()
-                                localQuestions.forEach { localQ ->
-                                    if (localQ.documentId !in remoteQuestionIds && localQ.quizId.isNotEmpty()) {
-                                        repository.deleteQuestionById(localQ.documentId)
-                                    }
-                                }
-
-                                _lastSyncTime.value = System.currentTimeMillis()
-                                sharedPrefs.edit().putLong("last_sync_time", _lastSyncTime.value).apply()
-                                logFirestore("Questions synchronized live (${snapshot.documentChanges.size} changes).")
-                                triggerRealtimeSyncReload()
-                            } catch (e: Exception) {
-                                Log.e("QuizViewModel", "Error in questions sync: ${e.message}", e)
-                            }
-                        }
-                    }
-                }
-        }
-        _isLiveSyncing.value = false
     }
 
     fun stopRealtimeFirestoreSync() {
@@ -802,10 +738,14 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         quizzesListenerRegistration?.remove()
         questionsListenerRegistration?.remove()
         adminQuestionsSubcollListener?.remove()
+        contactMethodsListenerRegistration?.remove()
+        privacyPolicyListenerRegistration?.remove()
         categoriesListenerRegistration = null
         quizzesListenerRegistration = null
         questionsListenerRegistration = null
         adminQuestionsSubcollListener = null
+        contactMethodsListenerRegistration = null
+        privacyPolicyListenerRegistration = null
         _isLiveSyncing.value = false
         logFirestore("Real-time cloud synchronization paused.")
     }
@@ -2787,6 +2727,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         quizEndTimeMillis = 0L
         _quizTimeTakenSeconds.value = 0f
         viewModelScope.launch(Dispatchers.IO) {
+            synchronizeContentIfNeeded(force = false)
+
             val freshQuiz = repository.getQuizById(quiz.documentId) ?: quiz
 
             var rawQuestions = repository.getQuestionsForQuiz(freshQuiz.documentId)
@@ -3200,6 +3142,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 val task = firestore.collection("categories").document(docId).set(newCat)
                 com.google.android.gms.tasks.Tasks.await(task)
 
+                incrementGlobalContentVersion()
+
                 repository.insertCategory(newCat)
 
                 logAdminAction("CREATE_CATEGORY", "CATEGORY", docId, "Category created: ${newCat.name}")
@@ -3230,6 +3174,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                 val task = firestore.collection("categories").document(updatedCat.documentId).set(updatedCat)
                 com.google.android.gms.tasks.Tasks.await(task)
+
+                incrementGlobalContentVersion()
 
                 repository.updateCategory(updatedCat)
 
@@ -3296,6 +3242,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 val task = firestore.collection("quizzes").document(docId).set(newQuiz)
                 com.google.android.gms.tasks.Tasks.await(task)
 
+                incrementGlobalContentVersion()
+
                 repository.insertQuiz(newQuiz)
 
                 logAdminAction("CREATE_QUIZ", "QUIZ", docId, "Quiz created: ${newQuiz.title} (Status: $statusStr)")
@@ -3333,6 +3281,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                 val task = firestore.collection("quizzes").document(updatedQuiz.documentId).set(updatedQuiz)
                 com.google.android.gms.tasks.Tasks.await(task)
+
+                incrementGlobalContentVersion()
 
                 repository.updateQuiz(updatedQuiz)
 
@@ -3421,6 +3371,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 com.google.android.gms.tasks.Tasks.await(batch.commit())
 
+                incrementGlobalContentVersion()
+
                 val quizTitle = reorderedList[targetIndex].title
                 val dirText = if (direction < 0) "UP" else "DOWN"
                 logAdminAction("REORDER_QUIZ", "QUIZ", quizId, "Moved quiz '$quizTitle' $dirText to position ${targetIndex + 1}")
@@ -3493,6 +3445,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
                 batch.commit().addOnSuccessListener {
                     logFirestore("Question added & synced (Quiz: $quizId, DocId: $docId)")
+                    incrementGlobalContentVersion()
                 }.addOnFailureListener { e ->
                     logFirestore("Question sync failed: ${e.message}")
                 }
@@ -3549,6 +3502,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
                 batch.commit().addOnSuccessListener {
                     logFirestore("Question updated & synced (Quiz: ${updatedQuest.quizId})")
+                    incrementGlobalContentVersion()
                 }
 
                 loadAdminQuestions(updatedQuest.quizId)
@@ -3931,6 +3885,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
                 try {
                     com.google.android.gms.tasks.Tasks.await(batch.commit())
+                    incrementGlobalContentVersion()
                     logFirestore("AI Scanned questions synced to Cloud Firestore.")
                 } catch (e: Exception) {
                     Log.w("QuizViewModel", "Batch commit warning: ${e.message}")
@@ -3966,6 +3921,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 val task = firestore.collection("categories").document(category.documentId).delete()
                 com.google.android.gms.tasks.Tasks.await(task)
 
+                incrementGlobalContentVersion()
+
                 repository.deleteCategory(category)
 
                 logAdminAction("DELETE_CATEGORY", "CATEGORY", category.documentId, "Category deleted: ${category.name}")
@@ -3992,6 +3949,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                 val task = firestore.collection("quizzes").document(quiz.documentId).delete()
                 com.google.android.gms.tasks.Tasks.await(task)
+
+                incrementGlobalContentVersion()
 
                 repository.deleteQuiz(quiz)
 
@@ -4036,6 +3995,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
                 val commitTask = batch.commit()
                 com.google.android.gms.tasks.Tasks.await(commitTask)
+
+                incrementGlobalContentVersion()
 
                 repository.deleteQuestion(question)
 
@@ -4495,7 +4456,55 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun startObservingPosts() {
+    private var lastPostDocumentSnapshot: com.google.firebase.firestore.DocumentSnapshot? = null
+    private val _isFetchingPosts = MutableStateFlow(false)
+    val isFetchingPosts: StateFlow<Boolean> = _isFetchingPosts.asStateFlow()
+
+    private val _hasMorePosts = MutableStateFlow(true)
+    val hasMorePosts: StateFlow<Boolean> = _hasMorePosts.asStateFlow()
+
+    private fun parseSocialPostDoc(doc: com.google.firebase.firestore.DocumentSnapshot): com.example.data.SocialPost {
+        val getLongVal: (String, Long) -> Long = { field, defaultVal ->
+            val raw = doc.get(field)
+            when (raw) {
+                is Number -> raw.toLong()
+                is String -> raw.toLongOrNull() ?: defaultVal
+                else -> defaultVal
+            }
+        }
+        val getBoolVal: (String, Boolean) -> Boolean = { field, defaultVal ->
+            val raw = doc.get(field)
+            when (raw) {
+                is Boolean -> raw
+                is String -> raw.equals("true", ignoreCase = true)
+                is Number -> raw.toInt() != 0
+                else -> defaultVal
+            }
+        }
+
+        return com.example.data.SocialPost(
+            documentId = doc.getString("documentId")?.ifBlank { doc.id } ?: doc.id,
+            title = doc.getString("title") ?: "",
+            description = doc.getString("description") ?: "",
+            mediaUrl = doc.getString("mediaUrl") ?: "",
+            feedMediaUrl = doc.getString("feedMediaUrl") ?: "",
+            originalMediaUrl = doc.getString("originalMediaUrl") ?: "",
+            mediaType = doc.getString("mediaType") ?: "image",
+            videoDuration = doc.getString("videoDuration") ?: "",
+            authorName = doc.getString("authorName") ?: "Speed English",
+            authorAvatarUrl = doc.getString("authorAvatarUrl") ?: "",
+            isPinned = getBoolVal("isPinned", false),
+            isPublished = getBoolVal("isPublished", true),
+            viewCount = getLongVal("viewCount", 0L),
+            likeCount = getLongVal("likeCount", 0L),
+            shareCount = getLongVal("shareCount", 0L),
+            likedUserIds = (doc.get("likedUserIds") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList(),
+            createdAt = getLongVal("createdAt", System.currentTimeMillis()),
+            updatedAt = getLongVal("updatedAt", System.currentTimeMillis())
+        )
+    }
+
+    fun loadInitialPostsPage(forceFetch: Boolean = false) {
         if (_posts.value.isEmpty()) {
             val cached = loadCachedPostsLocally()
             if (cached.isNotEmpty()) {
@@ -4503,132 +4512,92 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        if (!forceFetch && _posts.value.isNotEmpty() && lastPostDocumentSnapshot != null) {
+            return
+        }
+
+        if (_isFetchingPosts.value) return
+        _isFetchingPosts.value = true
+
         val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-        if (postsListenerRegistration == null) {
-            val parseDoc: (com.google.firebase.firestore.DocumentSnapshot) -> com.example.data.SocialPost = { doc ->
-                val getLongVal: (String, Long) -> Long = { field, defaultVal ->
-                    val raw = doc.get(field)
-                    when (raw) {
-                        is Number -> raw.toLong()
-                        is String -> raw.toLongOrNull() ?: defaultVal
-                        else -> defaultVal
-                    }
-                }
-                val getBoolVal: (String, Boolean) -> Boolean = { field, defaultVal ->
-                    val raw = doc.get(field)
-                    when (raw) {
-                        is Boolean -> raw
-                        is String -> raw.equals("true", ignoreCase = true)
-                        is Number -> raw.toInt() != 0
-                        else -> defaultVal
-                    }
-                }
+        val query = firestore.collection("social_posts")
+            .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
+            .limit(20)
 
-                com.example.data.SocialPost(
-                    documentId = doc.getString("documentId")?.ifBlank { doc.id } ?: doc.id,
-                    title = doc.getString("title") ?: "",
-                    description = doc.getString("description") ?: "",
-                    mediaUrl = doc.getString("mediaUrl") ?: "",
-                    feedMediaUrl = doc.getString("feedMediaUrl") ?: "",
-                    originalMediaUrl = doc.getString("originalMediaUrl") ?: "",
-                    mediaType = doc.getString("mediaType") ?: "image",
-                    videoDuration = doc.getString("videoDuration") ?: "",
-                    authorName = doc.getString("authorName") ?: "Speed English",
-                    authorAvatarUrl = doc.getString("authorAvatarUrl") ?: "",
-                    isPinned = getBoolVal("isPinned", false),
-                    isPublished = getBoolVal("isPublished", true),
-                    viewCount = getLongVal("viewCount", 0L),
-                    likeCount = getLongVal("likeCount", 0L),
-                    shareCount = getLongVal("shareCount", 0L),
-                    likedUserIds = (doc.get("likedUserIds") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList(),
-                    createdAt = getLongVal("createdAt", System.currentTimeMillis()),
-                    updatedAt = getLongVal("updatedAt", System.currentTimeMillis())
-                )
+        query.get().addOnSuccessListener { querySnap ->
+            _isFetchingPosts.value = false
+            _postsSyncError.value = null
+            if (querySnap != null && !querySnap.isEmpty) {
+                val items = querySnap.documents.map { parseSocialPostDoc(it) }
+                    .sortedWith(compareByDescending<com.example.data.SocialPost> { it.isPinned }.thenByDescending { it.createdAt })
+                _posts.value = items
+                cachePostsLocally(items)
+                lastPostDocumentSnapshot = querySnap.documents.lastOrNull()
+                _hasMorePosts.value = querySnap.documents.size >= 20
+                if (items.isNotEmpty()) {
+                    ensureAuditLogsForSocialPosts(items)
+                }
+            } else {
+                _hasMorePosts.value = false
             }
-
-            val query = firestore.collection("social_posts")
-                .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
-                .limit(30)
-
-            postsListenerRegistration = query
-                .addSnapshotListener(com.google.firebase.firestore.MetadataChanges.INCLUDE) { snapshot, error ->
-                    if (error != null) {
-                        Log.e("QuizViewModel", "Error in social_posts sync: ${error.message}")
-                        _postsSyncError.value = error.message
-                        postsListenerRegistration = null
-
-                        // If permission issue and user not authenticated, authenticate anonymously and retry
-                        val auth = com.google.firebase.auth.FirebaseAuth.getInstance()
-                        if (auth.currentUser == null) {
-                            try {
-                                auth.signInAnonymously()
-                                    .addOnSuccessListener {
-                                        Log.d("QuizViewModel", "Signed in anonymously for public feed access")
-                                        startObservingPosts()
-                                    }
-                                    .addOnFailureListener { e ->
-                                        Log.w("QuizViewModel", "Anonymous sign-in unavailable: ${e.message}")
-                                    }
-                            } catch (e: Exception) {
-                                Log.w("QuizViewModel", "Failed initiating anonymous auth: ${e.message}")
-                            }
-                        }
-
-                        // Fallback one-time fetch attempt (uses server or local cache)
-                        query.get()
-                            .addOnSuccessListener { querySnap ->
-                                if (querySnap != null && !querySnap.isEmpty) {
-                                    val fallbackItems = querySnap.documents.map { parseDoc(it) }
-                                        .sortedWith(compareByDescending<com.example.data.SocialPost> { it.isPinned }.thenByDescending { it.createdAt })
-                                    _posts.value = fallbackItems
-                                    cachePostsLocally(fallbackItems)
-                                    _postsSyncError.value = null
-                                } else if (_posts.value.isEmpty()) {
-                                    val cached = loadCachedPostsLocally()
-                                    if (cached.isNotEmpty()) {
-                                        _posts.value = cached
-                                    }
-                                }
-                            }
-                            .addOnFailureListener { getErr ->
-                                Log.w("QuizViewModel", "Fallback posts get failed: ${getErr.message}")
-                                if (_posts.value.isEmpty()) {
-                                    val cached = loadCachedPostsLocally()
-                                    if (cached.isNotEmpty()) {
-                                        _posts.value = cached
-                                    }
-                                }
-                            }
-                        return@addSnapshotListener
-                    }
-
-                    _postsSyncError.value = null
-
-                    if (snapshot != null) {
-                        val items = snapshot.documents.map { parseDoc(it) }
-                            .sortedWith(compareByDescending<com.example.data.SocialPost> { it.isPinned }.thenByDescending { it.createdAt })
-
-                        // The exact items from Cloud Firestore are assigned to _posts.
-                        // If Firestore has 5 posts -> both Admin and every User see exact 5 posts.
-                        _posts.value = items
-                        cachePostsLocally(items)
-                        if (items.isNotEmpty()) {
-                            ensureAuditLogsForSocialPosts(items)
-                        }
-                    }
+        }.addOnFailureListener { e ->
+            _isFetchingPosts.value = false
+            Log.w("QuizViewModel", "Failed fetching initial posts page: ${e.message}")
+            _postsSyncError.value = e.message
+            if (_posts.value.isEmpty()) {
+                val cached = loadCachedPostsLocally()
+                if (cached.isNotEmpty()) {
+                    _posts.value = cached
                 }
+            }
         }
     }
 
+    fun loadNextPostsPage() {
+        if (_isFetchingPosts.value || !_hasMorePosts.value || lastPostDocumentSnapshot == null) return
+        _isFetchingPosts.value = true
+
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        val query = firestore.collection("social_posts")
+            .orderBy("createdAt", com.google.firebase.firestore.Query.Direction.DESCENDING)
+            .startAfter(lastPostDocumentSnapshot!!)
+            .limit(20)
+
+        query.get().addOnSuccessListener { querySnap ->
+            _isFetchingPosts.value = false
+            if (querySnap != null && !querySnap.isEmpty) {
+                val newItems = querySnap.documents.map { parseSocialPostDoc(it) }
+                lastPostDocumentSnapshot = querySnap.documents.lastOrNull()
+                _hasMorePosts.value = querySnap.documents.size >= 20
+
+                val existingIds = _posts.value.map { it.documentId }.toSet()
+                val filteredNewItems = newItems.filter { it.documentId !in existingIds }
+
+                val merged = (_posts.value + filteredNewItems)
+                    .sortedWith(compareByDescending<com.example.data.SocialPost> { it.isPinned }.thenByDescending { it.createdAt })
+                _posts.value = merged
+                cachePostsLocally(merged)
+            } else {
+                _hasMorePosts.value = false
+            }
+        }.addOnFailureListener { e ->
+            _isFetchingPosts.value = false
+            Log.w("QuizViewModel", "Failed fetching next posts page: ${e.message}")
+        }
+    }
+
+    fun startObservingPosts() {
+        loadInitialPostsPage(forceFetch = false)
+    }
+
     fun refreshPosts() {
-        postsListenerRegistration?.remove()
-        postsListenerRegistration = null
-        startObservingPosts()
+        lastPostDocumentSnapshot = null
+        _hasMorePosts.value = true
+        loadInitialPostsPage(forceFetch = true)
     }
 
     fun stopObservingPosts() {
-        postsListenerRegistration?.remove()
-        postsListenerRegistration = null
+        // No snapshot listener active
     }
 
     /**

@@ -76,6 +76,16 @@ class MainActivity : ComponentActivity() {
     }
   }
 
+  override fun onResume() {
+    super.onResume()
+    try {
+      val quizViewModel = ViewModelProvider(this)[QuizViewModel::class.java]
+      quizViewModel.synchronizeContentIfNeeded(force = false)
+    } catch (e: Exception) {
+      android.util.Log.e("MainActivity", "Failed triggering synchronizeContentIfNeeded onResume: ${e.message}", e)
+    }
+  }
+
   override fun onDestroy() {
     super.onDestroy()
     try {
