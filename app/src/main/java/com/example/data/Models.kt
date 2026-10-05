@@ -171,6 +171,7 @@ data class SocialDestinationConfig(
     val platform: String = "telegram", // "telegram" or "facebook"
     val url: String = "",
     val enabled: Boolean = true,
+    val version: Long = 1L,
     val updatedAt: Long = System.currentTimeMillis()
 )
 

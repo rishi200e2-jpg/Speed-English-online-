@@ -584,6 +584,46 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun incrementSocialDestinationVersion(onComplete: ((Long) -> Unit)? = null) {
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        val metaRef = firestore.collection("app_config").document("content_metadata")
+        metaRef.set(
+            mapOf(
+                "socialDestinationVersion" to com.google.firebase.firestore.FieldValue.increment(1),
+                "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
+            ),
+            com.google.firebase.firestore.SetOptions.merge()
+        ).addOnSuccessListener {
+            val nextVer = sharedPrefs.getLong("local_social_destination_version", 0L) + 1L
+            sharedPrefs.edit().putLong("local_social_destination_version", nextVer).apply()
+            Log.d("QuizViewModel", "Incremented socialDestinationVersion to $nextVer in app_config/content_metadata")
+            onComplete?.invoke(nextVer)
+        }.addOnFailureListener { e ->
+            Log.w("QuizViewModel", "Failed incrementing socialDestinationVersion: ${e.message}")
+            onComplete?.invoke(sharedPrefs.getLong("local_social_destination_version", 0L))
+        }
+    }
+
+    fun incrementContactUsVersion(onComplete: ((Long) -> Unit)? = null) {
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        val metaRef = firestore.collection("app_config").document("content_metadata")
+        metaRef.set(
+            mapOf(
+                "contactUsVersion" to com.google.firebase.firestore.FieldValue.increment(1),
+                "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
+            ),
+            com.google.firebase.firestore.SetOptions.merge()
+        ).addOnSuccessListener {
+            val nextVer = sharedPrefs.getLong("local_contact_us_version", 0L) + 1L
+            sharedPrefs.edit().putLong("local_contact_us_version", nextVer).apply()
+            Log.d("QuizViewModel", "Incremented contactUsVersion to $nextVer in app_config/content_metadata")
+            onComplete?.invoke(nextVer)
+        }.addOnFailureListener { e ->
+            Log.w("QuizViewModel", "Failed incrementing contactUsVersion: ${e.message}")
+            onComplete?.invoke(sharedPrefs.getLong("local_contact_us_version", 0L))
+        }
+    }
+
     fun synchronizeContentIfNeeded(force: Boolean = false, onComplete: (Boolean) -> Unit = {}) {
         if (!_isNetworkAvailable.value) {
             logFirestore("Offline mode: Skipping content version check.")
@@ -596,7 +636,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         val fiveMinutesMs = 5 * 60 * 1000L
 
         if (!force && (now - lastCheckTime < fiveMinutesMs) && sharedPrefs.getLong("local_content_version", 0L) > 0L) {
-            Log.d("QuizViewModel", "Content version check throttled (< 5 mins elapsed). Using Room cache.")
+            Log.d("QuizViewModel", "Content version check throttled (< 5 mins elapsed). Using local cache.")
             onComplete(true)
             return
         }
@@ -604,6 +644,8 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+
+                // Check 1: Categories, Quizzes, Questions (content_metadata/global)
                 val metaDoc = try {
                     com.google.android.gms.tasks.Tasks.await(
                         firestore.collection("content_metadata").document("global").get()
@@ -697,8 +739,54 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
                     // Transactionally update Room
                     repository.clearAndRestoreData(remoteCategories, remoteQuizzes, remoteQuestions)
+                    sharedPrefs.edit().putLong("local_content_version", serverVersion).apply()
+                    logFirestore("Quiz content synchronized to version $serverVersion.")
+                    _syncStatusMessage.value = "All content up-to-date."
+                } else {
+                    logFirestore("Content up-to-date (Version: $localVersion). Loaded from Room Cache.")
+                }
 
-                    // 4. One-time fetch of Contact Methods
+                // Check 2: Single shared metadata change detector for Social Destination & Contact Us (app_config/content_metadata)
+                val configMetaDoc = try {
+                    com.google.android.gms.tasks.Tasks.await(
+                        firestore.collection("app_config").document("content_metadata").get()
+                    )
+                } catch (e: Exception) {
+                    null
+                }
+
+                val serverSocialDestVersion = configMetaDoc?.getLong("socialDestinationVersion") ?: 0L
+                val serverContactUsVersion = configMetaDoc?.getLong("contactUsVersion") ?: 0L
+
+                val localSocialDestVersion = sharedPrefs.getLong("local_social_destination_version", -1L)
+                val localContactUsVersion = sharedPrefs.getLong("local_contact_us_version", -1L)
+
+                // 2A. Selective Download for Social Destination (0 reads if versions match)
+                if (serverSocialDestVersion != localSocialDestVersion || localSocialDestVersion == -1L || force) {
+                    try {
+                        val destSnap = com.google.android.gms.tasks.Tasks.await(
+                            firestore.collection("app_config").document("social_destination").get()
+                        )
+                        if (destSnap.exists()) {
+                            val config = parseSocialDestinationDoc(destSnap)
+                            _socialDestination.value = config
+                            cacheSocialDestinationLocally(config)
+                        } else {
+                            val defaultDest = com.example.data.SocialDestinationConfig(platform = "telegram", url = "", enabled = false, version = 0L, updatedAt = 0L)
+                            _socialDestination.value = defaultDest
+                            cacheSocialDestinationLocally(defaultDest)
+                        }
+                        sharedPrefs.edit().putLong("local_social_destination_version", serverSocialDestVersion).apply()
+                        Log.d("QuizViewModel", "Social destination synced to version $serverSocialDestVersion")
+                    } catch (e: Exception) {
+                        Log.w("QuizViewModel", "Error syncing social destination from app_config: ${e.message}")
+                    }
+                } else {
+                    Log.d("QuizViewModel", "Social destination unchanged (version $localSocialDestVersion). 0 reads.")
+                }
+
+                // 2B. Selective Download for Contact Us (0 reads if versions match)
+                if (serverContactUsVersion != localContactUsVersion || localContactUsVersion == -1L || force) {
                     try {
                         val contactSnap = com.google.android.gms.tasks.Tasks.await(
                             firestore.collection("contact_methods").get()
@@ -721,18 +809,23 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                         if (remoteContacts.isNotEmpty()) {
                             repository.insertContactMethods(remoteContacts)
                         }
-                        // Prune deleted contact methods from local Room
                         val remoteContactIds = remoteContacts.map { it.documentId }.toSet()
                         repository.getAllContactMethods().forEach { localCm ->
                             if (localCm.documentId !in remoteContactIds) {
                                 repository.deleteContactMethodById(localCm.documentId)
                             }
                         }
+                        sharedPrefs.edit().putLong("local_contact_us_version", serverContactUsVersion).apply()
+                        Log.d("QuizViewModel", "Contact Us synced to version $serverContactUsVersion")
                     } catch (e: Exception) {
                         Log.w("QuizViewModel", "Error syncing contact methods: ${e.message}")
                     }
+                } else {
+                    Log.d("QuizViewModel", "Contact Us unchanged (version $localContactUsVersion). 0 reads.")
+                }
 
-                    // 5. One-time fetch of Privacy Policy
+                // 2C. Privacy Policy one-time local seed / sync check
+                if (sharedPrefs.getLong("local_privacy_version", 0L) == 0L || force) {
                     try {
                         val policySnap = com.google.android.gms.tasks.Tasks.await(
                             firestore.collection("app_config").document("privacy_policy").get()
@@ -752,42 +845,12 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                             val defaultPolicy = com.example.data.PrivacyPolicyData(documentId = "privacy_policy")
                             repository.insertPrivacyPolicy(defaultPolicy)
                         }
+                        sharedPrefs.edit().putLong("local_privacy_version", 1L).apply()
                     } catch (e: Exception) {
                         Log.w("QuizViewModel", "Error syncing privacy policy: ${e.message}")
                     }
-
-                    // 6. One-time fetch of Social Destination Config
-                    try {
-                        val destSnap = com.google.android.gms.tasks.Tasks.await(
-                            firestore.collection("app_config").document("social_destination").get()
-                        )
-                        if (destSnap.exists()) {
-                            val config = com.example.data.SocialDestinationConfig(
-                                platform = destSnap.getString("platform") ?: "telegram",
-                                url = destSnap.getString("url") ?: "",
-                                enabled = destSnap.getBoolean("enabled") ?: true,
-                                updatedAt = destSnap.getLong("updatedAt") ?: System.currentTimeMillis()
-                            )
-                            _socialDestination.value = config
-                            cacheSocialDestinationLocally(config)
-                        } else {
-                            val defaultDest = com.example.data.SocialDestinationConfig(platform = "telegram", url = "", enabled = false, updatedAt = 0L)
-                            _socialDestination.value = defaultDest
-                            cacheSocialDestinationLocally(defaultDest)
-                        }
-                    } catch (e: Exception) {
-                        Log.w("QuizViewModel", "Error syncing social destination: ${e.message}")
-                    }
-
-                    // Update local version
-                    sharedPrefs.edit().putLong("local_content_version", serverVersion).apply()
-
-                    logFirestore("Synchronization complete. Room updated to contentVersion $serverVersion.")
-                    _syncStatusMessage.value = "All content up-to-date."
-                } else {
-                    logFirestore("Content up-to-date (Version: $localVersion). Loaded from Room Cache.")
                 }
-                
+
                 sharedPrefs.edit().putLong("last_version_check_time", now).apply()
                 updateQuizQuestionsCounts()
                 withContext(Dispatchers.Main) {
@@ -796,6 +859,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 Log.e("QuizViewModel", "Error syncing content: ${e.message}", e)
                 logFirestore("Synchronization failed: ${e.message}. Using previous local Room cache.")
+                sharedPrefs.edit().putLong("last_version_check_time", now).apply()
                 withContext(Dispatchers.Main) {
                     onComplete(false)
                 }
@@ -2160,7 +2224,6 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
             updateQuizQuestionsCounts()
             startObservingContactMethodsAndPrivacyPolicy()
-            fetchSocialDestination()
             startObservingPosts()
             flushPendingViewsBatch()
 
@@ -4339,12 +4402,12 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
         firestore.collection("contact_methods").document(docId).set(data)
             .addOnSuccessListener {
-                incrementGlobalContentVersion()
+                incrementContactUsVersion()
                 onResult(true, null)
             }
             .addOnFailureListener { e ->
-                Log.w("QuizViewModel", "Firestore contact_methods write skipped/failed: ${e.message}")
-                onResult(true, null)
+                Log.e("QuizViewModel", "Firestore contact_methods write failed: ${e.message}", e)
+                onResult(false, e.message ?: "Failed to save contact method.")
             }
     }
 
@@ -4354,39 +4417,36 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
 
-        // Optimistic local Room & StateFlow deletion
-        viewModelScope.launch(Dispatchers.IO) {
-            repository.deleteContactMethodById(documentId)
-        }
-
         firestore.collection("contact_methods").document(documentId).delete()
             .addOnSuccessListener {
-                incrementGlobalContentVersion()
+                viewModelScope.launch(Dispatchers.IO) {
+                    repository.deleteContactMethodById(documentId)
+                }
+                incrementContactUsVersion()
                 onResult(true, null)
             }
             .addOnFailureListener { e ->
-                Log.w("QuizViewModel", "Firestore contact_methods delete skipped/failed: ${e.message}")
-                onResult(true, null)
+                Log.e("QuizViewModel", "Firestore contact_methods delete failed: ${e.message}", e)
+                onResult(false, e.message ?: "Failed to delete contact method.")
             }
     }
 
     fun toggleContactMethodEnabled(documentId: String, isEnabled: Boolean) {
         val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
 
-        viewModelScope.launch(Dispatchers.IO) {
-            val existing = repository.getAllContactMethods().find { it.documentId == documentId }
-            if (existing != null) {
-                repository.insertContactMethod(existing.copy(isEnabled = isEnabled, updatedAt = System.currentTimeMillis()))
-            }
-        }
-
         firestore.collection("contact_methods").document(documentId).update(
             "isEnabled", isEnabled,
             "updatedAt", System.currentTimeMillis()
         ).addOnSuccessListener {
-            incrementGlobalContentVersion()
+            viewModelScope.launch(Dispatchers.IO) {
+                val existing = repository.getAllContactMethods().find { it.documentId == documentId }
+                if (existing != null) {
+                    repository.insertContactMethod(existing.copy(isEnabled = isEnabled, updatedAt = System.currentTimeMillis()))
+                }
+            }
+            incrementContactUsVersion()
         }.addOnFailureListener { e ->
-            Log.w("QuizViewModel", "Firestore toggleContactMethodEnabled skipped/failed: ${e.message}")
+            Log.e("QuizViewModel", "Firestore toggleContactMethodEnabled failed: ${e.message}", e)
         }
     }
 
@@ -4427,20 +4487,41 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     private val _socialDestination = MutableStateFlow<com.example.data.SocialDestinationConfig>(loadCachedSocialDestinationLocally())
     val socialDestination: StateFlow<com.example.data.SocialDestinationConfig> = _socialDestination.asStateFlow()
 
+    private fun parseSocialDestinationDoc(doc: com.google.firebase.firestore.DocumentSnapshot): com.example.data.SocialDestinationConfig {
+        val platform = doc.getString("platform") ?: "telegram"
+        val url = doc.getString("url") ?: ""
+        val enabled = doc.getBoolean("enabled") ?: (url.isNotBlank())
+        val version = doc.getLong("version") ?: 1L
+        val updatedAt = when (val raw = doc.get("updatedAt")) {
+            is com.google.firebase.Timestamp -> raw.toDate().time
+            is Number -> raw.toLong()
+            else -> System.currentTimeMillis()
+        }
+        return com.example.data.SocialDestinationConfig(
+            platform = platform,
+            url = url,
+            enabled = enabled,
+            version = version,
+            updatedAt = updatedAt
+        )
+    }
+
     private fun loadCachedSocialDestinationLocally(): com.example.data.SocialDestinationConfig {
         return try {
             val platform = sharedPrefs.getString("social_dest_platform", "telegram") ?: "telegram"
             val url = sharedPrefs.getString("social_dest_url", "") ?: ""
             val enabled = sharedPrefs.getBoolean("social_dest_enabled", false)
+            val version = sharedPrefs.getLong("social_dest_version", 1L)
             val updatedAt = sharedPrefs.getLong("social_dest_updated_at", 0L)
             com.example.data.SocialDestinationConfig(
                 platform = platform,
                 url = url,
                 enabled = enabled,
+                version = version,
                 updatedAt = updatedAt
             )
         } catch (e: Exception) {
-            com.example.data.SocialDestinationConfig(platform = "telegram", url = "", enabled = false, updatedAt = 0L)
+            com.example.data.SocialDestinationConfig(platform = "telegram", url = "", enabled = false, version = 0L, updatedAt = 0L)
         }
     }
 
@@ -4450,6 +4531,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 .putString("social_dest_platform", config.platform)
                 .putString("social_dest_url", config.url)
                 .putBoolean("social_dest_enabled", config.enabled)
+                .putLong("social_dest_version", config.version)
                 .putLong("social_dest_updated_at", config.updatedAt)
                 .apply()
         } catch (e: Exception) {
@@ -4462,23 +4544,19 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         firestore.collection("app_config").document("social_destination").get()
             .addOnSuccessListener { doc ->
                 if (doc != null && doc.exists()) {
-                    val platform = doc.getString("platform") ?: "telegram"
-                    val url = doc.getString("url") ?: ""
-                    val enabled = doc.getBoolean("enabled") ?: (url.isNotBlank())
-                    val updatedAt = doc.getLong("updatedAt") ?: System.currentTimeMillis()
-                    val config = com.example.data.SocialDestinationConfig(platform, url, enabled, updatedAt)
+                    val config = parseSocialDestinationDoc(doc)
                     _socialDestination.value = config
                     cacheSocialDestinationLocally(config)
                     onComplete?.invoke(config)
                 } else {
-                    val defaultDest = com.example.data.SocialDestinationConfig(platform = "telegram", url = "", enabled = false, updatedAt = 0L)
-                    _socialDestination.value = defaultDest
-                    cacheSocialDestinationLocally(defaultDest)
-                    onComplete?.invoke(defaultDest)
+                    val emptyConfig = com.example.data.SocialDestinationConfig(platform = "telegram", url = "", enabled = false, version = 0L, updatedAt = 0L)
+                    _socialDestination.value = emptyConfig
+                    cacheSocialDestinationLocally(emptyConfig)
+                    onComplete?.invoke(emptyConfig)
                 }
             }
             .addOnFailureListener { e ->
-                Log.w("QuizViewModel", "Failed fetching social destination: ${e.message}")
+                Log.w("QuizViewModel", "Failed fetching social_destination: ${e.message}")
                 onComplete?.invoke(_socialDestination.value)
             }
     }
@@ -4491,34 +4569,36 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         val cleanPlatform = if (platform.equals("facebook", ignoreCase = true)) "facebook" else "telegram"
         val cleanUrl = url.trim()
-        val now = System.currentTimeMillis()
-        val config = com.example.data.SocialDestinationConfig(
-            platform = cleanPlatform,
-            url = cleanUrl,
-            enabled = enabled,
-            updatedAt = now
-        )
-
-        // Optimistic local update
-        _socialDestination.value = config
-        cacheSocialDestinationLocally(config)
+        val newVersion = _socialDestination.value.version + 1L
 
         val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-        val data = mapOf(
+        val data = hashMapOf<String, Any>(
             "platform" to cleanPlatform,
             "url" to cleanUrl,
             "enabled" to enabled,
-            "updatedAt" to now
+            "version" to newVersion,
+            "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
         )
 
+        // Authoritative write to Firestore app_config/social_destination
         firestore.collection("app_config").document("social_destination").set(data)
             .addOnSuccessListener {
-                incrementGlobalContentVersion()
+                val updatedConfig = com.example.data.SocialDestinationConfig(
+                    platform = cleanPlatform,
+                    url = cleanUrl,
+                    enabled = enabled,
+                    version = newVersion,
+                    updatedAt = System.currentTimeMillis()
+                )
+                // Update local Admin cache only after cloud write succeeds
+                _socialDestination.value = updatedConfig
+                cacheSocialDestinationLocally(updatedConfig)
+                incrementSocialDestinationVersion()
                 onResult(true, null)
             }
             .addOnFailureListener { e ->
-                Log.e("QuizViewModel", "Failed saving social destination to Firestore: ${e.message}", e)
-                onResult(false, e.message)
+                Log.e("QuizViewModel", "Failed saving social destination to Firestore app_config: ${e.message}", e)
+                onResult(false, e.message ?: "Failed to save destination to cloud.")
             }
     }
 
@@ -4527,33 +4607,47 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
         onResult: (Boolean, String?) -> Unit = { _, _ -> }
     ) {
         val current = _socialDestination.value
-        saveSocialDestination(
-            platform = current.platform,
-            url = current.url,
-            enabled = enabled,
-            onResult = onResult
+        val newVersion = current.version + 1L
+        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        val updates = hashMapOf<String, Any>(
+            "enabled" to enabled,
+            "version" to newVersion,
+            "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
         )
+
+        firestore.collection("app_config").document("social_destination").update(updates)
+            .addOnSuccessListener {
+                val updated = current.copy(enabled = enabled, version = newVersion, updatedAt = System.currentTimeMillis())
+                _socialDestination.value = updated
+                cacheSocialDestinationLocally(updated)
+                incrementSocialDestinationVersion()
+                onResult(true, null)
+            }
+            .addOnFailureListener { e ->
+                Log.e("QuizViewModel", "Failed updating social destination enabled state: ${e.message}", e)
+                onResult(false, e.message ?: "Failed to update state in cloud.")
+            }
     }
 
     fun deleteSocialDestination(onResult: (Boolean, String?) -> Unit = { _, _ -> }) {
-        val emptyConfig = com.example.data.SocialDestinationConfig(
-            platform = "telegram",
-            url = "",
-            enabled = false,
-            updatedAt = System.currentTimeMillis()
-        )
-        _socialDestination.value = emptyConfig
-        cacheSocialDestinationLocally(emptyConfig)
-
         val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
         firestore.collection("app_config").document("social_destination").delete()
             .addOnSuccessListener {
-                incrementGlobalContentVersion()
+                val emptyConfig = com.example.data.SocialDestinationConfig(
+                    platform = "telegram",
+                    url = "",
+                    enabled = false,
+                    version = 0L,
+                    updatedAt = 0L
+                )
+                _socialDestination.value = emptyConfig
+                cacheSocialDestinationLocally(emptyConfig)
+                incrementSocialDestinationVersion()
                 onResult(true, null)
             }
             .addOnFailureListener { e ->
                 Log.e("QuizViewModel", "Failed deleting social destination from Firestore: ${e.message}", e)
-                onResult(false, e.message)
+                onResult(false, e.message ?: "Failed to delete destination from cloud.")
             }
     }
 
@@ -4570,7 +4664,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
 
     // Dedicated persistent storage for unique-user Post interactions (survives app restart and process kill)
     private val interactionPrefs: android.content.SharedPreferences by lazy {
-        application.getSharedPreferences("post_user_interactions_v1", Context.MODE_PRIVATE)
+        getApplication<Application>().getSharedPreferences("post_user_interactions_v1", Context.MODE_PRIVATE)
     }
 
     // Thread-safe in-flight locks to prevent concurrent duplicate calls and race conditions

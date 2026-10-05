@@ -122,11 +122,31 @@ service cloud.firestore {
     }
 
     // ==========================================
-    // 9. Application Configuration & Metadata
+    // 9. Contact Methods Collection (Dynamic Contact Us)
     // ==========================================
+    match /contact_methods/{contactId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin() || (isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin");
+    }
+
+    // ==========================================
+    // 10. Application Configuration & Metadata (Lightweight SSoT)
+    // ==========================================
+    match /app_config/content_metadata {
+      allow read: if true;
+      allow write, create, update, delete: if isAdmin() || (isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin");
+    }
+
+    match /app_config/social_destination {
+      // All learners can read the active destination
+      allow read: if true;
+      // Strictly Admin only for creating, updating, disabling, and deleting
+      allow create, update, delete: if isAdmin() || (isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin");
+    }
+
     match /app_config/{configId} {
       allow read: if true;
-      allow write, create, update, delete: if isAdmin() || isNotBlocked();
+      allow create, update, delete: if isAdmin() || (isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin");
     }
 
     match /content_metadata/{docId} {
