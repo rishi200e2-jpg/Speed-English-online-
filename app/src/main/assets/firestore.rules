@@ -1,117 +1,262 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions
+    // ========================================================
+    // HELPER FUNCTIONS
+    // ========================================================
+
     function isAuthenticated() {
       return request.auth != null;
     }
 
-    // Supports UID and Email with proper null checks
     function isOwner(userId) {
       return isAuthenticated() && (
         request.auth.uid == userId ||
-        (request.auth.token != null && 'email' in request.auth.token && request.auth.token.email == userId)
+        (
+          request.auth.token != null &&
+          'email' in request.auth.token &&
+          request.auth.token.email == userId
+        ) ||
+        (
+          request.auth.token != null &&
+          'email' in request.auth.token &&
+          request.auth.token.email.replace(".", "_") == userId
+        )
       );
     }
 
     function isAdmin() {
       return isAuthenticated() && (
-        (request.auth.token != null && 'email' in request.auth.token && request.auth.token.email == "sd504212@gmail.com") ||
-        (request.auth.token != null && 'email' in request.auth.token && request.auth.token.email == "admin@speedenglish.local") ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin")
+        (
+          request.auth.token != null &&
+          'email' in request.auth.token &&
+          request.auth.token.email == "sd504212@gmail.com"
+        ) ||
+        (
+          request.auth.token != null &&
+          'email' in request.auth.token &&
+          request.auth.token.email == "admin@speedenglish.local"
+        ) ||
+        (
+          exists(
+            /databases/$(database)/documents/users/$(request.auth.uid)
+          ) &&
+          get(
+            /databases/$(database)/documents/users/$(request.auth.uid)
+          ).data.role == "admin"
+        ) ||
+        (
+          request.auth.token != null &&
+          'email' in request.auth.token &&
+          exists(
+            /databases/$(database)/documents/users/$(
+              request.auth.token.email.replace(".", "_")
+            )
+          ) &&
+          get(
+            /databases/$(database)/documents/users/$(
+              request.auth.token.email.replace(".", "_")
+            )
+          ).data.role == "admin"
+        )
       );
     }
 
-    // ==========================================
-    // 1. Categories Collection (Global Content)
-    // ==========================================
+
+    // ========================================================
+    // 1. CATEGORIES (Public Read, Admin Write)
+    // ========================================================
+
     match /categories/{categoryId} {
       allow read: if true;
       allow create, update, delete: if isAdmin();
     }
 
-    // ==========================================
-    // 2. Quizzes Collection & Subcollections (Global Content)
-    // ==========================================
+
+    // ========================================================
+    // 2. QUIZZES & QUESTIONS (Public Read, Admin Write)
+    // ========================================================
+
     match /quizzes/{quizId} {
       allow read: if true;
       allow create, update, delete: if isAdmin();
 
-      // Subcollection: Questions under Quiz
       match /questions/{questionId} {
         allow read: if true;
         allow create, update, delete: if isAdmin();
       }
     }
 
-    // ==========================================
-    // 3. Questions Top-Level Collection (Global Content)
-    // ==========================================
+
+    // ========================================================
+    // 3. TOP-LEVEL QUESTIONS
+    // ========================================================
+
     match /questions/{questionId} {
       allow read: if true;
       allow create, update, delete: if isAdmin();
     }
 
-    // ==========================================
-    // 4. Users Collection & User-Specific Data
-    // ==========================================
+
+    // ========================================================
+    // 4. USERS & PROFILES
+    // ========================================================
+
     match /users/{userId} {
-      allow read: if isOwner(userId) || isAdmin();
-      allow create: if isOwner(userId) || isAdmin();
-      allow update: if isAdmin() || isOwner(userId);
+      // Allows viewing public user profile details for social feed & leaderboards
+      allow read: if true;
+
+      allow create: if isOwner(userId);
+
+      // Users can update their profile info, but cannot change role, status, or blocked state
+      allow update: if isAdmin() || (
+        isOwner(userId) &&
+        request.resource.data.role == resource.data.role &&
+        request.resource.data.status == resource.data.status &&
+        request.resource.data.blocked == resource.data.blocked
+      );
+
       allow delete: if isAdmin();
 
-      // User's own progress subcollection
+
+      // ------------------------------------------------------
+      // USER PROGRESS (Strict Owner Privacy)
+      // ------------------------------------------------------
+
       match /progress/{progressId} {
-        allow read, write, delete: if isOwner(userId) || isAdmin();
+        allow read, write, delete:
+          if isOwner(userId) || isAdmin();
       }
 
-      // User's own attempts subcollection
+
+      // ------------------------------------------------------
+      // USER ATTEMPTS (Strict Owner Privacy)
+      // ------------------------------------------------------
+
       match /attempts/{attemptId} {
-        allow read, write, delete: if isOwner(userId) || isAdmin();
+        allow read, write, delete:
+          if isOwner(userId) || isAdmin();
       }
     }
 
-    // ==========================================
-    // 5. Live Progress Collection
-    // ==========================================
+
+    // ========================================================
+    // 5. LIVE PROGRESS
+    // ========================================================
+
     match /liveProgress/{userId} {
-      allow read, write, delete: if isOwner(userId) || isAdmin();
+      allow read, write, delete:
+        if isOwner(userId) || isAdmin();
+
       match /quizzes/{quizId} {
-        allow read, write, delete: if isOwner(userId) || isAdmin();
+        allow read, write, delete:
+          if isOwner(userId) || isAdmin();
       }
     }
 
-    // ==========================================
-    // 6. Top-Level Attempts Collection (Historical Attempt Records)
-    // ==========================================
+
+    // ========================================================
+    // 6. TOP-LEVEL HISTORICAL ATTEMPTS
+    // ========================================================
+
     match /attempts/{attemptId} {
-      allow read, write: if isAuthenticated() || isAdmin();
+      allow read, write:
+        if isAuthenticated() || isAdmin();
     }
 
-    // ==========================================
-    // 7. Admin Logs & Question Audit Logs (Admin Only)
-    // ==========================================
+
+    // ========================================================
+    // 7. ADMIN LOGS
+    // ========================================================
+
     match /adminLogs/{logId} {
-      allow read, create, update, delete: if isAdmin();
+      allow read, create, update, delete:
+        if isAdmin();
     }
+
+
+    // ========================================================
+    // 8. QUESTION AUDIT LOGS
+    // ========================================================
 
     match /question_audit_logs/{logId} {
-      allow read, create, update, delete: if isAdmin();
+      allow read, create, update, delete:
+        if isAdmin();
     }
 
-    // ==========================================
-    // 8. Social Posts Collection (Feed & Admin Management)
-    // ==========================================
+
+    // ========================================================
+    // 9. SOCIAL POSTS (Posts, Media, Likes, Views, Shares)
+    // ========================================================
+
     match /social_posts/{postId} {
-      // Anyone (every learner and guest) can read posts
+
+      // Public posts can be read by everyone (guests, users, and admins)
       allow read: if true;
-      // Admins and authenticated users can create, update, and delete posts
-      allow create, delete: if isAdmin() || isAuthenticated();
-      // Counter updates (likes, shares, views) and admin modifications
-      allow update: if true;
+
+      // Logged-in users and admins can create posts
+      allow create: if isAuthenticated();
+
+      // Logged-in users can update likes, views, and shares on posts
+      allow update: if isAuthenticated();
+
+      // Admin can delete any post; User can delete their own post
+      allow delete: if isAdmin() ||
+        (
+          isAuthenticated() &&
+          resource.data.authorId == request.auth.uid
+        );
+
+
+      // ======================================================
+      // POST SUBCOLLECTIONS (Comments, Likes, Shares)
+      // ======================================================
+
+      match /{subcollection=**} {
+        allow read: if true;
+        allow create, update, delete: if isAuthenticated();
+      }
+    }
+
+
+    // ========================================================
+    // 10. CONTACT METHODS (Public Read, Admin Write)
+    // ========================================================
+
+    match /contact_methods/{contactId} {
+      // All learners can read contact methods without requiring login
+      allow read: if true;
+      // Strictly Admin only can create, edit, toggle, or delete contact methods
+      allow create, update, delete: if isAdmin();
+    }
+
+
+    // ========================================================
+    // 11. APPLICATION CONFIGURATION & METADATA
+    // ========================================================
+
+    // Single shared metadata doc: checks versions before downloading actual configs
+    match /app_config/content_metadata {
+      // All users can read version numbers for lightweight sync
+      allow read: if true;
+      // Only Admin can increment version numbers
+      allow write: if isAdmin();
+    }
+
+    // Post Destination configuration document
+    match /app_config/social_destination {
+      // All learners can read the active destination
+      allow read: if true;
+      // Strictly Admin only for saving, updating, disabling, and deleting
+      allow write: if isAdmin();
+    }
+
+    // General app_config fallback
+    match /app_config/{configId} {
+      allow read: if true;
+      allow write: if isAdmin();
     }
   }
 }

@@ -1816,7 +1816,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 val context = getApplication<Application>()
                 val file = File(context.cacheDir, "Progress_${user.displayName.replace(" ", "_")}_${System.currentTimeMillis()}.csv")
                 file.writeText(csvBuilder.toString())
-                val authority = "com.example.fileprovider"
+                val authority = "${context.packageName}.fileprovider"
                 val fileUri: Uri = FileProvider.getUriForFile(context, authority, file)
                 val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                     type = "text/csv"
@@ -1985,7 +1985,7 @@ class QuizViewModel(application: Application) : AndroidViewModel(application) {
                 pdfDocument.writeTo(FileOutputStream(file))
                 pdfDocument.close()
 
-                val authority = "com.example.fileprovider"
+                val authority = "${appContext.packageName}.fileprovider"
                 val fileUri: Uri = FileProvider.getUriForFile(appContext, authority, file)
                 val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                     type = "application/pdf"

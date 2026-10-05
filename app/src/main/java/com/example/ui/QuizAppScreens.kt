@@ -5643,9 +5643,19 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                             }
 
                                             val catName = category?.name ?: "English"
-                                            val shareText = "I scored ${formatDecimal(score)} Marks ($percentage% Accuracy) in ${quiz.title} ($catName)! 🚀 Check out my scorecard: ${destination.url}"
+                                            val shareText = "${quiz.title} - I scored ${formatDecimal(score)} Marks ($percentage% Accuracy)! 🚀 Check out my scorecard below! ${destination.url}"
                                             val isTelegram = destination.platform.equals("telegram", ignoreCase = true)
                                             val isFacebook = destination.platform.equals("facebook", ignoreCase = true)
+
+                                            if (isFacebook) {
+                                                try {
+                                                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                                    val clip = android.content.ClipData.newUri(context.contentResolver, "Scorecard Image", reportImageUri)
+                                                    clipboard.setPrimaryClip(clip)
+                                                } catch (e: Exception) {
+                                                    e.printStackTrace()
+                                                }
+                                            }
 
                                             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                                                 isPosting = false
@@ -6249,7 +6259,11 @@ fun generateQuizReportImage(
             scaledBitmap.recycle()
         }
 
-        val reportUri = android.net.Uri.fromFile(reportFile)
+        val reportUri = androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            reportFile
+        )
         return reportUri
     } catch (e: Exception) {
         e.printStackTrace()
