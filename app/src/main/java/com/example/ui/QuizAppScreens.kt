@@ -7,6 +7,7 @@ import androidx.compose.ui.res.painterResource
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.example.data.Category
+import com.example.data.AdminUserFilterState
 import com.example.data.Quiz
 import com.example.data.Question
 import com.example.data.QuestionAuditLog
@@ -5623,93 +5624,73 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                                 return@launch
                                             }
 
-                                            // Helper function to convert local Uri to Base64 data URL if Storage upload fails
-                                            fun uriToBase64DataUrl(ctx: android.content.Context, uri: android.net.Uri): String? {
-                                                return try {
-                                                    val inputStream = ctx.contentResolver.openInputStream(uri) ?: return null
-                                                    val bytes = inputStream.readBytes()
-                                                    inputStream.close()
-                                                    val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                                                    "data:image/webp;base64,$base64"
+                                            val destination = viewModel.socialDestination.value
+
+                                            if (!destination.enabled) {
+                                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                    isPosting = false
+                                                    android.widget.Toast.makeText(context, "Post destination is currently unavailable.", android.widget.Toast.LENGTH_LONG).show()
+                                                }
+                                                return@launch
+                                            }
+
+                                            if (destination.url.isBlank()) {
+                                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                    isPosting = false
+                                                    android.widget.Toast.makeText(context, "Post destination is not configured.", android.widget.Toast.LENGTH_LONG).show()
+                                                }
+                                                return@launch
+                                            }
+
+                                            val catName = category?.name ?: "English"
+                                            val shareText = "I scored ${formatDecimal(score)} Marks ($percentage% Accuracy) in ${quiz.title} ($catName)! 🚀 Check out my scorecard: ${destination.url}"
+                                            val isTelegram = destination.platform.equals("telegram", ignoreCase = true)
+                                            val isFacebook = destination.platform.equals("facebook", ignoreCase = true)
+
+                                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                isPosting = false
+                                                val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                                    type = "image/*"
+                                                    putExtra(android.content.Intent.EXTRA_STREAM, reportImageUri)
+                                                    putExtra(android.content.Intent.EXTRA_TEXT, shareText)
+                                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+
+                                                    if (isTelegram) {
+                                                        setPackage("org.telegram.messenger")
+                                                    } else if (isFacebook) {
+                                                        setPackage("com.facebook.katana")
+                                                    }
+                                                }
+
+                                                try {
+                                                    context.startActivity(shareIntent)
                                                 } catch (e: Exception) {
-                                                    null
-                                                }
-                                            }
-
-                                            fun publishPost(mediaUrl: String) {
-                                                val currentUserName = viewModel.currentUserName.value?.ifBlank {
-                                                    com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.displayName?.ifBlank { "Speed English Learner" } ?: "Speed English Learner"
-                                                } ?: "Speed English Learner"
-                                                val currentAvatar = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.photoUrl?.toString() ?: ""
-                                                val catName = category?.name ?: "English"
-
-                                                val newPost = com.example.data.SocialPost(
-                                                    documentId = "",
-                                                    title = "$catName - ${quiz.title} Scorecard",
-                                                    description = "I scored ${formatDecimal(score)} Marks ($percentage% Accuracy) in ${quiz.title}! 🚀 Check out my scorecard below!",
-                                                    mediaUrl = mediaUrl,
-                                                    feedMediaUrl = mediaUrl,
-                                                    originalMediaUrl = "",
-                                                    mediaType = "image",
-                                                    authorName = currentUserName,
-                                                    authorAvatarUrl = currentAvatar,
-                                                    isPinned = false,
-                                                    isPublished = true,
-                                                    createdAt = System.currentTimeMillis(),
-                                                    updatedAt = System.currentTimeMillis()
-                                                )
-
-                                                viewModel.saveSocialPost(newPost) { success, err ->
-                                                    scope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                                                        isPosting = false
-                                                        if (success) {
-                                                            android.widget.Toast.makeText(context, "✓ Quiz Report posted successfully!", android.widget.Toast.LENGTH_LONG).show()
-                                                        } else {
-                                                            android.widget.Toast.makeText(context, "Posting failed: ${err ?: "Unknown error"}", android.widget.Toast.LENGTH_LONG).show()
+                                                    // Fallback 1: Generic Chooser with local scorecard image
+                                                    try {
+                                                        val chooser = android.content.Intent.createChooser(
+                                                            android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                                                type = "image/*"
+                                                                putExtra(android.content.Intent.EXTRA_STREAM, reportImageUri)
+                                                                putExtra(android.content.Intent.EXTRA_TEXT, shareText)
+                                                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                            },
+                                                            "Share Scorecard to ${if (isTelegram) "Telegram" else "Facebook"}"
+                                                        ).apply {
+                                                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                                         }
-                                                    }
-                                                }
-                                            }
-
-                                            // Try uploading single ~40KB WebP image to Firebase Storage or use Base64 fallback (NEVER save local file URI)
-                                            val reportBase64 = uriToBase64DataUrl(context, reportImageUri) ?: ""
-
-                                            try {
-                                                val storage = com.google.firebase.storage.FirebaseStorage.getInstance()
-                                                val uuid = java.util.UUID.randomUUID()
-                                                val postRef = storage.reference.child("posts/$uuid.webp")
-                                                postRef.putFile(reportImageUri)
-                                                    .addOnSuccessListener {
-                                                        postRef.downloadUrl.addOnSuccessListener { downloadUri ->
-                                                            publishPost(downloadUri.toString())
-                                                        }.addOnFailureListener {
-                                                            if (reportBase64.isNotBlank()) {
-                                                                publishPost(reportBase64)
-                                                            } else {
-                                                                scope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                                                                    isPosting = false
-                                                                    android.widget.Toast.makeText(context, "Failed to upload report image.", android.widget.Toast.LENGTH_LONG).show()
-                                                                }
+                                                        context.startActivity(chooser)
+                                                    } catch (e2: Exception) {
+                                                        // Fallback 2: Direct browser opening of configured Group URL
+                                                        try {
+                                                            val browserIntent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(destination.url)).apply {
+                                                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                                                             }
+                                                            context.startActivity(browserIntent)
+                                                        } catch (e3: Exception) {
+                                                            android.widget.Toast.makeText(context, "Unable to open destination: ${destination.url}", android.widget.Toast.LENGTH_LONG).show()
                                                         }
-                                                    }
-                                                    .addOnFailureListener {
-                                                        if (reportBase64.isNotBlank()) {
-                                                            publishPost(reportBase64)
-                                                        } else {
-                                                            scope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                                                                isPosting = false
-                                                                android.widget.Toast.makeText(context, "Upload failed. Check connection.", android.widget.Toast.LENGTH_LONG).show()
-                                                            }
-                                                        }
-                                                    }
-                                            } catch (e: Exception) {
-                                                if (reportBase64.isNotBlank()) {
-                                                    publishPost(reportBase64)
-                                                } else {
-                                                    scope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                                                        isPosting = false
-                                                        android.widget.Toast.makeText(context, "Upload error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
                                                     }
                                                 }
                                             }
@@ -7136,7 +7117,8 @@ fun AdminDashboardScreen(viewModel: QuizViewModel, initiallyVerified: Boolean = 
                             Triple(5, "Users", Icons.Default.People),
                             Triple(6, "Contact Us", Icons.Default.SupportAgent),
                             Triple(7, "Privacy Policy", Icons.Default.PrivacyTip),
-                            Triple(8, "Post", Icons.Default.DynamicFeed)
+                            Triple(8, "Post", Icons.Default.DynamicFeed),
+                            Triple(9, "Links", Icons.Default.Link)
                         )
                         tabs.forEach { (index, label, icon) ->
                             val isSelected = selectedTab == index
@@ -8960,6 +8942,9 @@ fun AdminDashboardScreen(viewModel: QuizViewModel, initiallyVerified: Boolean = 
                     8 -> {
                         AdminPostManagementContent(viewModel = viewModel)
                     }
+                    9 -> {
+                        AdminSocialDestinationManagementContent(viewModel = viewModel)
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -10438,33 +10423,26 @@ fun AdminUsersContent(
     modifier: Modifier = Modifier
 ) {
     val users by viewModel.allRegisteredUsers.collectAsState()
+    val filter by viewModel.adminUsersFilter.collectAsState()
+    val hasMore by viewModel.adminUsersHasMore.collectAsState()
     val attemptsMap by viewModel.adminUserAttemptsMap.collectAsState()
     val loading by viewModel.adminUsersLoading.collectAsState()
     val error by viewModel.adminUsersError.collectAsState()
 
-    var searchQuery by remember { mutableStateOf("") }
+    var searchQueryInput by remember(filter.searchQuery) { mutableStateOf(filter.searchQuery) }
     var expandedUserId by remember { mutableStateOf<String?>(null) }
     var attemptToDelete by remember { mutableStateOf<QuizAttempt?>(null) }
     var userToResetProgress by remember { mutableStateOf<RegisteredUser?>(null) }
 
-    // Observe registered users bounded to 50 on entry and detach immediately on exit
     DisposableEffect(Unit) {
-        viewModel.startObservingAllRegisteredUsers()
+        viewModel.fetchAdminUsersPage(reset = true)
         onDispose {
-            viewModel.stopObservingAllRegisteredUsers()
             viewModel.clearAllUserAttemptsListeners()
         }
     }
 
-    val filteredUsers = remember(users, searchQuery) {
-        users.filter { user ->
-            user.displayName.contains(searchQuery, ignoreCase = true) ||
-            user.email.contains(searchQuery, ignoreCase = true)
-        }
-    }
-
     val totalUsers = users.size
-    val studentCount = users.count { it.role.equals("student", ignoreCase = true) }
+    val studentCount = users.count { it.role.equals("student", ignoreCase = true) || it.role.equals("user", ignoreCase = true) }
     val adminCount = users.count { it.role.equals("admin", ignoreCase = true) }
 
     Column(
@@ -10486,7 +10464,7 @@ fun AdminUsersContent(
                     modifier = Modifier.padding(12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(text = "Total Users", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    Text(text = "Loaded Users", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                     Text(text = "$totalUsers", fontSize = 20.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onPrimaryContainer)
                 }
             }
@@ -10516,77 +10494,94 @@ fun AdminUsersContent(
             }
         }
 
-        val syncStatus by viewModel.syncManager.syncStatus.collectAsState()
-        val isSyncActive by viewModel.syncManager.isLiveSyncActive.collectAsState()
-
-        Surface(
-            shape = RoundedCornerShape(10.dp),
-            color = if (isSyncActive) Color(0xFFECFDF5) else Color(0xFFEFF6FF),
-            border = BorderStroke(1.dp, if (isSyncActive) Color(0xFFA7F3D0) else Color(0xFFBFDBFE)),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .background(if (isSyncActive) Color(0xFF10B981) else Color(0xFF3B82F6), CircleShape)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "SyncManager: $syncStatus",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = if (isSyncActive) Color(0xFF065F46) else Color(0xFF1E40AF)
-                )
-            }
-        }
-
-        // Search bar & Refresh
+        // Search Bar & Search Action
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                placeholder = { Text("Search users by name or email...") },
+                value = searchQueryInput,
+                onValueChange = { searchQueryInput = it },
+                placeholder = { Text("Search UID, Email, Name...", fontSize = 12.sp) },
                 modifier = Modifier
                     .weight(1f)
                     .testTag("admin_users_search_input"),
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search Users") },
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
-                )
-            )
-
-            IconButton(
-                onClick = {
-                    if (searchQuery.isNotBlank()) {
-                        viewModel.searchOlderUsers(searchQuery)
-                    } else {
-                        viewModel.loadAllRegisteredUsers()
+                trailingIcon = {
+                    if (searchQueryInput.isNotEmpty()) {
+                        IconButton(onClick = {
+                            searchQueryInput = ""
+                            viewModel.setAdminUsersFilter(filter.copy(searchQuery = ""))
+                        }) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear", modifier = Modifier.size(16.dp))
+                        }
                     }
                 },
-                modifier = Modifier
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), CircleShape)
-                    .size(48.dp)
-                    .testTag("admin_users_refresh_button")
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp)
+            )
+
+            Button(
+                onClick = { viewModel.setAdminUsersFilter(filter.copy(searchQuery = searchQueryInput)) },
+                shape = RoundedCornerShape(12.dp)
             ) {
-                if (loading) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(
-                        imageVector = if (searchQuery.isNotBlank()) Icons.Default.Search else Icons.Default.Refresh,
-                        contentDescription = "Refresh or Search Users",
-                        tint = MaterialTheme.colorScheme.primary
-                    )
+                Text("Search")
+            }
+        }
+
+        // Filter Chips Panel
+        Card(
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Status Filter Row
+                Text("Account Status:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("ALL" to "All", "ACTIVE" to "Active", "BLOCKED" to "Blocked").forEach { (code, label) ->
+                        FilterChip(
+                            selected = filter.statusFilter == code,
+                            onClick = { viewModel.setAdminUsersFilter(filter.copy(statusFilter = code)) },
+                            label = { Text(label, fontSize = 11.sp) }
+                        )
+                    }
+                }
+
+                // Registration Date & Sort Order
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Registration Date:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            FilterChip(
+                                selected = filter.dateRange == "ALL",
+                                onClick = { viewModel.setAdminUsersFilter(filter.copy(dateRange = "ALL")) },
+                                label = { Text("All Time", fontSize = 10.sp) }
+                            )
+                            FilterChip(
+                                selected = filter.dateRange == "TODAY",
+                                onClick = { viewModel.setAdminUsersFilter(filter.copy(dateRange = "TODAY")) },
+                                label = { Text("Today", fontSize = 10.sp) }
+                            )
+                        }
+                    }
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Sort Order:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            FilterChip(
+                                selected = filter.sortOrder == "NEWEST",
+                                onClick = { viewModel.setAdminUsersFilter(filter.copy(sortOrder = "NEWEST")) },
+                                label = { Text("Newest", fontSize = 10.sp) }
+                            )
+                            FilterChip(
+                                selected = filter.sortOrder == "OLDEST",
+                                onClick = { viewModel.setAdminUsersFilter(filter.copy(sortOrder = "OLDEST")) },
+                                label = { Text("Oldest", fontSize = 10.sp) }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -10608,12 +10603,15 @@ fun AdminUsersContent(
         }
 
         // Users Directory List
-        if (filteredUsers.isEmpty()) {
+        if (loading && users.isEmpty()) {
+            Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(modifier = Modifier.size(32.dp))
+            }
+        } else if (users.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 32.dp)
-                    .testTag("admin_users_empty_state"),
+                    .padding(vertical = 32.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -10625,26 +10623,17 @@ fun AdminUsersContent(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = if (searchQuery.isNotEmpty()) "No users match '$searchQuery' in loaded list." else "No registered users found.",
+                        text = "No users match current filters.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (searchQuery.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        OutlinedButton(
-                            onClick = { viewModel.searchOlderUsers(searchQuery) },
-                            modifier = Modifier.testTag("admin_search_cloud_users_button")
-                        ) {
-                            Text("Search older users on Cloud")
-                        }
-                    }
                 }
             }
         } else {
             Column(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                filteredUsers.forEach { user ->
+                users.forEach { user ->
                     val isExpanded = expandedUserId == user.uid
                     UserDirectoryItemCard(
                         user = user,
@@ -10667,6 +10656,21 @@ fun AdminUsersContent(
                         },
                         viewModel = viewModel
                     )
+                }
+
+                if (hasMore) {
+                    Button(
+                        onClick = { viewModel.fetchAdminUsersPage(reset = false) },
+                        enabled = !loading,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        if (loading) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), color = MaterialTheme.colorScheme.onPrimary)
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
+                        Text("Load Next Batch", fontSize = 13.sp)
+                    }
                 }
             }
         }
@@ -12160,6 +12164,426 @@ fun AdminPrivacyPolicyManagementContent(viewModel: QuizViewModel) {
                 }
             }
         }
+    }
+}
+
+@Composable
+fun AdminSocialDestinationManagementContent(viewModel: QuizViewModel) {
+    val destination by viewModel.socialDestination.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    var selectedPlatform by remember(destination) { mutableStateOf(destination.platform.ifBlank { "telegram" }) }
+    var groupUrl by remember(destination) { mutableStateOf(destination.url) }
+    var isLinkEnabled by remember(destination) { mutableStateOf(destination.enabled) }
+    var isSaving by remember { mutableStateOf(false) }
+    var statusMsg by remember { mutableStateOf<String?>(null) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .widthIn(max = 600.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // Active Destination Status Preview Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (destination.url.isNotBlank() && destination.enabled) {
+                    Color(0xFFECFDF5)
+                } else if (destination.url.isNotBlank()) {
+                    Color(0xFFFFFBEB)
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                }
+            ),
+            border = BorderStroke(
+                1.dp,
+                if (destination.url.isNotBlank() && destination.enabled) Color(0xFFA7F3D0)
+                else if (destination.url.isNotBlank()) Color(0xFFFDE68A)
+                else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+            )
+        ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Link,
+                            contentDescription = "Destination Link",
+                            tint = if (destination.url.isNotBlank() && destination.enabled) Color(0xFF059669) else MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "User Post Destination",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    // Status Pill
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (destination.url.isNotBlank() && destination.enabled) Color(0xFF10B981)
+                                else if (destination.url.isNotBlank()) Color(0xFFF59E0B)
+                                else Color.Gray
+                    ) {
+                        Text(
+                            text = if (destination.url.isNotBlank() && destination.enabled) "Enabled"
+                                   else if (destination.url.isNotBlank()) "Disabled"
+                                   else "Not Configured",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+
+                if (destination.url.isNotBlank()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Platform: ",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = if (destination.platform.equals("facebook", ignoreCase = true)) "Facebook Group" else "Telegram Group/Channel",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.clickable {
+                            try {
+                                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(destination.url))
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                android.widget.Toast.makeText(context, "Invalid URL", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    ) {
+                        Text(
+                            text = "Link: ",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = destination.url,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Icon(
+                            imageVector = Icons.Default.OpenInNew,
+                            contentDescription = "Open Link",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                } else {
+                    Text(
+                        text = "No destination link configured. The Quiz Result 'Post' button will notify users that posting destination is not configured.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        // Configuration Form Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Configure External Group Link",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+
+                Text(
+                    text = "Select the target platform and provide your official group/channel URL. When users finish a quiz and tap 'Post', they will be redirected directly to this group with their scorecard.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                // Platform Choice
+                Text(
+                    text = "Select Platform",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val isTele = selectedPlatform.equals("telegram", ignoreCase = true)
+                    val isFb = selectedPlatform.equals("facebook", ignoreCase = true)
+
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable { selectedPlatform = "telegram" },
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isTele) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        border = BorderStroke(1.dp, if (isTele) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(vertical = 10.dp, horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Send,
+                                contentDescription = "Telegram",
+                                tint = if (isTele) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Telegram",
+                                fontWeight = if (isTele) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isTele) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable { selectedPlatform = "facebook" },
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isFb) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        border = BorderStroke(1.dp, if (isFb) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(vertical = 10.dp, horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Groups,
+                                contentDescription = "Facebook",
+                                tint = if (isFb) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Facebook",
+                                fontWeight = if (isFb) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isFb) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+
+                // Group Link Field
+                OutlinedTextField(
+                    value = groupUrl,
+                    onValueChange = { groupUrl = it },
+                    label = {
+                        Text(
+                            if (selectedPlatform == "facebook") "Facebook Group Link (e.g. https://facebook.com/groups/...)"
+                            else "Telegram Group/Channel Link (e.g. https://t.me/...)",
+                            fontSize = 11.sp
+                        )
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    leadingIcon = {
+                        Icon(imageVector = Icons.Default.Link, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    }
+                )
+
+                // Enable/Disable Toggle Switch
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text(
+                            text = "Link Active Status",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                        Text(
+                            text = if (isLinkEnabled) "Active — Users can tap Post on Quiz Result" else "Disabled — Users will be informed link is unavailable",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = isLinkEnabled,
+                        onCheckedChange = { isLinkEnabled = it }
+                    )
+                }
+
+                // Save Button
+                Button(
+                    onClick = {
+                        if (groupUrl.isBlank()) {
+                            statusMsg = "Please enter a valid group link."
+                            return@Button
+                        }
+                        if (!groupUrl.startsWith("http://") && !groupUrl.startsWith("https://") && !groupUrl.startsWith("tg://")) {
+                            statusMsg = "Link must start with https:// or http://"
+                            return@Button
+                        }
+                        isSaving = true
+                        viewModel.saveSocialDestination(
+                            platform = selectedPlatform,
+                            url = groupUrl.trim(),
+                            enabled = isLinkEnabled
+                        ) { success, err ->
+                            isSaving = false
+                            if (success) {
+                                statusMsg = "✓ Destination link updated successfully!"
+                            } else {
+                                statusMsg = "Error saving: ${err ?: "Unknown error"}"
+                            }
+                        }
+                    },
+                    enabled = !isSaving,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Save,
+                        contentDescription = "Save",
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(if (isSaving) "Saving..." else "Save / Update Destination", fontWeight = FontWeight.Bold)
+                }
+
+                // Quick Action Buttons Row (Enable/Disable & Delete)
+                if (destination.url.isNotBlank()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                isSaving = true
+                                val newEnabled = !destination.enabled
+                                viewModel.toggleSocialDestinationEnabled(newEnabled) { success, err ->
+                                    isSaving = false
+                                    if (success) {
+                                        isLinkEnabled = newEnabled
+                                        statusMsg = if (newEnabled) "✓ Destination Enabled!" else "✓ Destination Disabled."
+                                    } else {
+                                        statusMsg = "Error: ${err ?: "Unknown"}"
+                                    }
+                                }
+                            },
+                            enabled = !isSaving,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(40.dp),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text(if (destination.enabled) "Disable Link" else "Enable Link", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        }
+
+                        OutlinedButton(
+                            onClick = { showDeleteConfirm = true },
+                            enabled = !isSaving,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(40.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            ),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Delete",
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Delete Link", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        }
+                    }
+                }
+
+                if (statusMsg != null) {
+                    Text(
+                        text = statusMsg ?: "",
+                        fontSize = 11.sp,
+                        color = if (statusMsg?.contains("Error") == true || statusMsg?.contains("Please") == true || statusMsg?.contains("must") == true) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+    }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete Destination Link?", fontWeight = FontWeight.Bold) },
+            text = { Text("Are you sure you want to remove the external group destination link? The Quiz Result Post button will indicate no destination is configured.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteConfirm = false
+                        viewModel.deleteSocialDestination { success, err ->
+                            if (success) {
+                                groupUrl = ""
+                                isLinkEnabled = false
+                                statusMsg = "✓ Destination link deleted successfully."
+                            } else {
+                                statusMsg = "Error deleting: ${err ?: "Unknown error"}"
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Delete", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 

@@ -120,5 +120,18 @@ service cloud.firestore {
       // Counter updates (likes, shares, views) and public engagement
       allow update: if true;
     }
+
+    // ==========================================
+    // 9. Application Configuration & Metadata
+    // ==========================================
+    match /app_config/{configId} {
+      allow read: if true;
+      allow write, create, update, delete: if isAdmin() || isNotBlocked();
+    }
+
+    match /content_metadata/{docId} {
+      allow read: if true;
+      allow write: if isAdmin() || isNotBlocked();
+    }
   }
 }

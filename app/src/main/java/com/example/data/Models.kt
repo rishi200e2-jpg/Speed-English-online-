@@ -167,8 +167,16 @@ data class PrivacyPolicyData(
     val updatedAt: Long = System.currentTimeMillis()
 )
 
+data class SocialDestinationConfig(
+    val platform: String = "telegram", // "telegram" or "facebook"
+    val url: String = "",
+    val enabled: Boolean = true,
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
 data class SocialPost(
     val documentId: String = "",
+    val userId: String = "",
     val title: String = "",
     val description: String = "",
     val mediaUrl: String = "",
@@ -186,4 +194,24 @@ data class SocialPost(
     val likedUserIds: List<String> = emptyList(),
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
+)
+
+data class AdminPostFilterState(
+    val searchQuery: String = "",
+    val dateRange: String = "ALL", // "TODAY", "7_DAYS", "30_DAYS", "ALL"
+    val sortOrder: String = "NEWEST", // "NEWEST", "OLDEST"
+    val imageFilter: String = "ALL", // "ALL", "HAS_IMAGE", "NO_IMAGE"
+    val minLikes: Long? = null,
+    val maxLikes: Long? = null,
+    val minViews: Long? = null,
+    val maxViews: Long? = null,
+    val minShares: Long? = null,
+    val maxShares: Long? = null
+)
+
+data class AdminUserFilterState(
+    val searchQuery: String = "",
+    val statusFilter: String = "ALL", // "ALL", "ACTIVE", "BLOCKED"
+    val dateRange: String = "ALL", // "TODAY", "7_DAYS", "30_DAYS", "ALL"
+    val sortOrder: String = "NEWEST" // "NEWEST", "OLDEST"
 )
