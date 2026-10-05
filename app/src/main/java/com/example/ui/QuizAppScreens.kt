@@ -5600,6 +5600,11 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                     if (!isPosting) {
                                         isPosting = true
                                         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                                            val destination = viewModel.socialDestination.value
+                                            val isFacebook = destination.platform.equals("facebook", ignoreCase = true) || 
+                                                             destination.url.contains("facebook.com", ignoreCase = true) || 
+                                                             destination.url.contains("fb.me", ignoreCase = true)
+
                                             val reportImageUri = generateQuizReportImage(
                                                 context = context,
                                                 quiz = quiz,
@@ -5613,7 +5618,8 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                                 avgTimeStr = avgTimeStr,
                                                 positiveMarksEarned = positiveMarksEarned,
                                                 negativeMarksDeducted = negativeMarksDeducted,
-                                                praiseText = praiseText
+                                                praiseText = praiseText,
+                                                saveToGallery = isFacebook
                                             )
 
                                             if (reportImageUri == null) {
@@ -5624,28 +5630,11 @@ fun ScoreScreen(viewModel: QuizViewModel, quiz: Quiz, score: Float, totalQuestio
                                                 return@launch
                                             }
 
-                                            val destination = viewModel.socialDestination.value
-
-                                            if (!destination.enabled) {
-                                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                                    isPosting = false
-                                                    android.widget.Toast.makeText(context, "Post destination is currently unavailable.", android.widget.Toast.LENGTH_LONG).show()
-                                                }
-                                                return@launch
-                                            }
-
-                                            if (destination.url.isBlank()) {
-                                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                                    isPosting = false
-                                                    android.widget.Toast.makeText(context, "Post destination is not configured.", android.widget.Toast.LENGTH_LONG).show()
-                                                }
-                                                return@launch
-                                            }
-
                                             val catName = category?.name ?: "English"
                                             val shareText = "${quiz.title} - I scored ${formatDecimal(score)} Marks ($percentage% Accuracy)! 🚀 Check out my scorecard below! ${destination.url}"
-                                            val isTelegram = destination.platform.equals("telegram", ignoreCase = true)
-                                            val isFacebook = destination.platform.equals("facebook", ignoreCase = true)
+                                            val isTelegram = destination.platform.equals("telegram", ignoreCase = true) || 
+                                                             destination.url.contains("t.me", ignoreCase = true) || 
+                                                             destination.url.contains("telegram.me", ignoreCase = true)
 
                                             if (isFacebook) {
                                                 try {
@@ -5840,7 +5829,8 @@ fun generateQuizReportImage(
     avgTimeStr: String,
     positiveMarksEarned: Float,
     negativeMarksDeducted: Float,
-    praiseText: String
+    praiseText: String,
+    saveToGallery: Boolean = false
 ): android.net.Uri? {
     try {
         // 4:3 Aspect Ratio Source Canvas (960x720)
@@ -6267,6 +6257,28 @@ fun generateQuizReportImage(
         )
         if (scaledBitmap != bitmap) {
             scaledBitmap.recycle()
+        }
+
+        if (saveToGallery) {
+            try {
+                val filename = "Scorecard_${System.currentTimeMillis()}.png"
+                val contentValues = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, filename)
+                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/png")
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_PICTURES + "/SpeedEnglish")
+                    }
+                }
+                val imageUri = context.contentResolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+                imageUri?.let { uri ->
+                    context.contentResolver.openOutputStream(uri)?.use { stream ->
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, stream)
+                    }
+                    return uri
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
 
         val reportUri = androidx.core.content.FileProvider.getUriForFile(
